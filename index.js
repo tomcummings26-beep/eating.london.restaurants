@@ -1,8 +1,25 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import Airtable from 'airtable';
 import axios from 'axios';
 import Bottleneck from 'bottleneck';
 import slugify from 'slugify';
+
+// In production (Railway) configuration must come from environment variables.
+// For local development we still allow a .env file.
+const isRailway = Boolean(
+  process.env.RAILWAY_STATIC_URL ||
+  process.env.RAILWAY_PROJECT_ID ||
+  process.env.RAILWAY_ENVIRONMENT
+);
+
+if (!isRailway) {
+  const { error } = dotenv.config();
+  if (error && error.code !== 'ENOENT') {
+    console.error('Failed to load local .env file:', error);
+  }
+} else {
+  console.log('[config] Railway environment detected – expecting secrets via Railway Variables.');
+}
 
 // ---------- Config ----------
 const {
