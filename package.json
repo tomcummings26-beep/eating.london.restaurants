@@ -1,0 +1,19 @@
+{
+  "name": "eating-london-enricher",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "NODE_ENV=development node index.js",
+    "once": "node index.js --once"
+  },
+  "dependencies": {
+    "airtable": "^0.12.3",
+    "axios": "^1.7.7",
+    "bottleneck": "^2.19.5",
+    "dotenv": "^16.4.5",
+    "p-limit": "^6.1.0",
+    "slugify": "^1.6.6"
+  }
+}
