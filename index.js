@@ -65,6 +65,14 @@ const limiter = new Bottleneck({
 // ---------- Helpers ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const formatDateForAirtable = (date = new Date()) => date.toISOString().split('T')[0];
+
+const toNumberOrNull = (value) => {
+  if (value == null || value === '') return null;
+  const asNumber = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(asNumber) ? asNumber : null;
+};
+
 const toSlug = (name) =>
   slugify(name || '', { lower: true, strict: true, trim: true });
 
@@ -191,7 +199,7 @@ async function enrichRecord(record) {
       if (!placeId) {
         await upsertBySlug(slug, {
           'Enrichment Status': 'not_found',
-          'Last Enriched': new Date().toISOString()
+          'Last Enriched': formatDateForAirtable()
         });
         console.log(`Not found: ${name}`);
         return;
@@ -205,7 +213,7 @@ async function enrichRecord(record) {
         'Place ID': placeId,
         'Enrichment Status': 'error',
         Notes: 'No details returned from Places',
-        'Last Enriched': new Date().toISOString()
+        'Last Enriched': formatDateForAirtable()
       });
       console.log(`No details: ${name}`);
       return;
@@ -238,20 +246,20 @@ async function enrichRecord(record) {
       'Address': details.formatted_address || fields['Address'] || '',
       'City': city || fields['City'] || '',
       'Postcode': postcode || fields['Postcode'] || '',
-      'Lat': details.geometry?.location?.lat ?? null,
-      'Lng': details.geometry?.location?.lng ?? null,
+      'Lat': toNumberOrNull(details.geometry?.location?.lat ?? fields['Lat']),
+      'Lng': toNumberOrNull(details.geometry?.location?.lng ?? fields['Lng']),
       'Website': details.website || fields['Website'] || '',
       'Phone': details.formatted_phone_number || details.international_phone_number || fields['Phone'] || '',
       'Cuisine': cuisine,
-      'Price Level': details.price_level ?? fields['Price Level'] ?? null,
-      'Rating': details.rating ?? fields['Rating'] ?? null,
-      'User Ratings': details.user_ratings_total ?? fields['User Ratings'] ?? null,
+      'Price Level': toNumberOrNull(details.price_level ?? fields['Price Level']),
+      'Rating': toNumberOrNull(details.rating ?? fields['Rating']),
+      'User Ratings': toNumberOrNull(details.user_ratings_total ?? fields['User Ratings']),
       'Opening Hours JSON': JSON.stringify(details.opening_hours?.weekday_text || []),
       'Photo URL': photoUrl || fields['Photo URL'] || '',
       'Photo Attribution': photoAttr || fields['Photo Attribution'] || '',
       'Description': description || fields['Description'] || '',
       'Enrichment Status': 'enriched',
-      'Last Enriched': new Date().toISOString()
+      'Last Enriched': formatDateForAirtable()
     };
 
     await upsertBySlug(slug, payload);
@@ -264,7 +272,7 @@ async function enrichRecord(record) {
     await upsertBySlug(toSlug(fields['Slug'] || fields['Name'] || ''), {
       'Enrichment Status': 'error',
       'Notes': String(err?.message || err),
-      'Last Enriched': new Date().toISOString()
+      'Last Enriched': formatDateForAirtable()
     });
   }
 }
