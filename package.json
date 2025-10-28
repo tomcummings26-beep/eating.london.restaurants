@@ -9,6 +9,10 @@
     "once": "node index.js --once"
   },
   "dependencies": {
+    "airtable": "^0.12.2",
+    "axios": "^1.7.7",
+    "bottleneck": "^2.19.5",
+    "dotenv": "^16.4.5",
     "airtable": "^0.12.3",
     "axios": "^1.7.7",
     "bottleneck": "^2.19.5",

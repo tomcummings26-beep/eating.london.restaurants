@@ -78,6 +78,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 5. **Deploy on Railway**
 
    - Create a new Railway project and connect this repository.
+   - Store your secrets in Railway so they are available at runtime:
+   - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production, and the worker reads `process.env` directly.
    - Add the environment variables from `.env` to Railway → **Variables**.
    - Deploy (Railway will run `npm install` followed by `npm start`).
    - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run start`.
