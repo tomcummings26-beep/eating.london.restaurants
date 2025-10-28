@@ -77,15 +77,26 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 
 5. **Deploy on Railway**
 
-  - Create a new Railway project and connect this repository.
-  - Store your secrets in Railway so they are available at runtime:
-    - In the dashboard, open **Variables** and add every key/value from your local `.env` file.
-    - Or use the CLI: `railway variables set AIRTABLE_API_KEY=...` (repeat for each variable).
-    - Verify they are available with `railway variables` or `railway run node -e "console.log(process.env.AIRTABLE_API_KEY)"`.
-  - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
+   - Create a new Railway project and connect this repository.
+   - Store your secrets in Railway so they are available at runtime:
+     - In the dashboard, open **Variables** and add every key/value from your local `.env` file.
+     - Or use the CLI: `railway variables set AIRTABLE_API_KEY=...` (repeat for each variable).
+     - Verify they are available with `railway variables` or `railway run node -e "console.log(process.env.AIRTABLE_API_KEY)"`.
+   - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
    - Deploy (Railway will run `npm install` followed by `npm start`).
    - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run start`.
    - For manual backfills, trigger `npm run once` from the Railway run tab.
+
+## Staying in sync with `main`
+
+When a pull request reports merge conflicts, update your feature branch before pushing more commits:
+
+```bash
+# from the repository root while on your feature branch
+./scripts/update_from_main.sh
+```
+
+The helper script fetches the latest `origin/main`, updates your local `main` branch, then lets you choose between rebasing or merging those changes into the current branch. Resolving any conflicts locally keeps the PR conflict-free on GitHub.
 
 ## Notes
 
