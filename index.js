@@ -32,7 +32,8 @@ const {
   MAX_RECORDS_PER_RUN = '50',
   CONCURRENCY = '2',
   SLEEP_MS_BETWEEN_REQUESTS = '250',
-  OPENAI_API_KEY
+  OPENAI_API_KEY,
+  AIRTABLE_ENRICHMENT_STATUS_OPTIONS
 } = process.env;
 
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !GOOGLE_PLACES_API_KEY) {
@@ -65,11 +66,64 @@ const limiter = new Bottleneck({
 // ---------- Helpers ----------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const formatDateForAirtable = (date = new Date()) => date.toISOString().split('T')[0];
+const parseSelectOptions = (value, fallback = []) => {
+  if (!value) return [...fallback];
+  const entries = value
+    .split(',')
+    .map((option) => option.trim())
+    .filter(Boolean);
+  return entries.length ? entries : [...fallback];
+};
+
+const enrichmentStatusOptions = parseSelectOptions(
+  AIRTABLE_ENRICHMENT_STATUS_OPTIONS,
+  ['pending', 'enriched', 'not_found', 'error']
+);
+
+const matchSelectOption = (desired, options, fieldName) => {
+  if (!desired) return undefined;
+  const normalized = desired.trim().toLowerCase();
+  for (const option of options) {
+    if (option.trim().toLowerCase() === normalized) {
+      return option;
+    }
+  }
+  console.warn(
+    `[airtable] ${fieldName || 'Select field'} value "${desired}" is not configured. Valid options: ${options.join(', ')}`
+  );
+  return undefined;
+};
+
+const pickEnrichmentStatus = (status, fallback) => {
+  const matched = matchSelectOption(status, enrichmentStatusOptions, 'Enrichment Status');
+  if (matched !== undefined) return matched;
+  if (fallback) {
+    const fallbackMatched = matchSelectOption(
+      fallback,
+      enrichmentStatusOptions,
+      'Enrichment Status'
+    );
+    if (fallbackMatched !== undefined) return fallbackMatched;
+  }
+  return undefined;
+};
+
+const currentTimestampForAirtable = () => new Date().toISOString();
+
+const resolveLastEnrichedValue = (existing) => {
+  if (!existing) return currentTimestampForAirtable();
+  if (existing instanceof Date) return currentTimestampForAirtable();
+  if (typeof existing === 'string' && existing.includes('T')) {
+    return currentTimestampForAirtable();
+  }
+  // Assume date-only column if the stored value lacks a time component.
+  return currentTimestampForAirtable().split('T')[0];
+};
 
 const toNumberOrNull = (value) => {
   if (value == null || value === '') return null;
-  const asNumber = typeof value === 'number' ? value : Number(value);
+  const trimmed = typeof value === 'string' ? value.trim() : value;
+  const asNumber = typeof trimmed === 'number' ? trimmed : Number.parseFloat(trimmed);
   return Number.isFinite(asNumber) ? asNumber : null;
 };
 
@@ -197,10 +251,12 @@ async function enrichRecord(record) {
     if (!placeId) {
       placeId = await findPlaceIdByText(name);
       if (!placeId) {
-        await upsertBySlug(slug, {
-          'Enrichment Status': 'not_found',
-          'Last Enriched': formatDateForAirtable()
-        });
+        const status = pickEnrichmentStatus('not_found');
+        const update = {
+          'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
+        };
+        if (status) update['Enrichment Status'] = status;
+        await upsertBySlug(slug, update);
         console.log(`Not found: ${name}`);
         return;
       }
@@ -209,12 +265,14 @@ async function enrichRecord(record) {
     // Step 2: Details
     const details = await getPlaceDetails(placeId);
     if (!details) {
-      await upsertBySlug(slug, {
+      const status = pickEnrichmentStatus('error', 'pending');
+      const update = {
         'Place ID': placeId,
-        'Enrichment Status': 'error',
         Notes: 'No details returned from Places',
-        'Last Enriched': formatDateForAirtable()
-      });
+        'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
+      };
+      if (status) update['Enrichment Status'] = status;
+      await upsertBySlug(slug, update);
       console.log(`No details: ${name}`);
       return;
     }
@@ -258,9 +316,11 @@ async function enrichRecord(record) {
       'Photo URL': photoUrl || fields['Photo URL'] || '',
       'Photo Attribution': photoAttr || fields['Photo Attribution'] || '',
       'Description': description || fields['Description'] || '',
-      'Enrichment Status': 'enriched',
-      'Last Enriched': formatDateForAirtable()
+      'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
+
+    const enrichedStatus = pickEnrichmentStatus('enriched');
+    if (enrichedStatus) payload['Enrichment Status'] = enrichedStatus;
 
     await upsertBySlug(slug, payload);
     console.log(`Enriched: ${name} (${slug})`);
@@ -269,11 +329,13 @@ async function enrichRecord(record) {
       throw err;
     }
     console.error(`Error enriching ${name}:`, err?.response?.data || err.message);
-    await upsertBySlug(toSlug(fields['Slug'] || fields['Name'] || ''), {
-      'Enrichment Status': 'error',
+    const status = pickEnrichmentStatus('error', 'pending');
+    const fallbackFields = {
       'Notes': String(err?.message || err),
-      'Last Enriched': formatDateForAirtable()
-    });
+      'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
+    };
+    if (status) fallbackFields['Enrichment Status'] = status;
+    await upsertBySlug(toSlug(fields['Slug'] || fields['Name'] || ''), fallbackFields);
   }
 }
 

@@ -32,7 +32,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
    - `AIRTABLE_BASE_ID`
    - `GOOGLE_PLACES_API_KEY`
 
-   Optional tuning variables are documented inline in `.env.example`.
+   Optional tuning variables are documented inline in `.env.example` (including overrides for the `Enrichment Status` select options if your Airtable column uses different labels).
 
 3. **Prepare Airtable**
 
@@ -108,3 +108,4 @@ The helper script fetches the latest `origin/main`, updates your local `main` br
 ## Troubleshooting
 
 - **Airtable `NOT_FOUND` (404)** – Confirm that `AIRTABLE_BASE_ID` and `AIRTABLE_TABLE_NAME` match the base/table names exactly (Airtable is case-sensitive) and that the API key has access to the base. After renaming a table, redeploy or restart the worker so it picks up the correct value.
+- **Airtable `INVALID_MULTIPLE_CHOICE_OPTIONS`** – Ensure the `Enrichment Status` single-select column contains every status the worker can write (`pending`, `enriched`, `not_found`, `error` by default). If you prefer different casing or labels, set `AIRTABLE_ENRICHMENT_STATUS_OPTIONS` to a comma-separated list of the exact options configured in Airtable.
