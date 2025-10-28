@@ -26,6 +26,19 @@ if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !GOOGLE_PLACES_API_KEY) {
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 const table = base(AIRTABLE_TABLE_NAME);
 
+const isAirtableNotFound = (err) =>
+  err?.statusCode === 404 && err?.error === 'NOT_FOUND';
+
+const logAirtableNotFoundHelp = () => {
+  console.error('Fatal: Airtable returned NOT_FOUND (404).');
+  console.error(
+    'Double-check AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, and that the AIRTABLE_API_KEY has access to the base and table.'
+  );
+  console.error(
+    'If the table was recently created, ensure the name matches exactly (including casing) and that the base ID is correct.'
+  );
+};
+
 // Rate limiters (be gentle to Google + Airtable)
 const limiter = new Bottleneck({
   minTime: Number(SLEEP_MS_BETWEEN_REQUESTS),
@@ -227,6 +240,9 @@ async function enrichRecord(record) {
     await upsertBySlug(slug, payload);
     console.log(`Enriched: ${name} (${slug})`);
   } catch (err) {
+    if (isAirtableNotFound(err)) {
+      throw err;
+    }
     console.error(`Error enriching ${name}:`, err?.response?.data || err.message);
     await upsertBySlug(toSlug(fields['Slug'] || fields['Name'] || ''), {
       'Enrichment Status': 'error',
@@ -274,6 +290,10 @@ async function run() {
 }
 
 run().catch((e) => {
-  console.error('Fatal:', e);
+  if (isAirtableNotFound(e)) {
+    logAirtableNotFoundHelp();
+  } else {
+    console.error('Fatal:', e?.response?.data || e);
+  }
   process.exit(1);
 });

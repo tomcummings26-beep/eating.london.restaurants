@@ -93,3 +93,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 - When Google supplies a photo attribution, ensure it is displayed alongside the image on your site to comply with the license.
 - The worker is idempotent: repeated runs update the same record via the slug.
 - If `OPENAI_API_KEY` is omitted, descriptions remain untouched or blank.
+
+## Troubleshooting
+
+- **Airtable `NOT_FOUND` (404)** – Confirm that `AIRTABLE_BASE_ID` and `AIRTABLE_TABLE_NAME` match the base/table names exactly (Airtable is case-sensitive) and that the API key has access to the base. After renaming a table, redeploy or restart the worker so it picks up the correct value.
