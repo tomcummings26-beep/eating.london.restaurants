@@ -49,8 +49,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      | Address | Long text |
      | City | Text |
      | Postcode | Text |
-     | Lat | Number |
-     | Lng | Number |
+     | Lat | Number (8 decimal places) |
+     | Lng | Number (8 decimal places) |
      | Website | URL |
      | Phone | Text |
      | Cuisine | Text |
@@ -66,6 +66,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      | Notes | Long text |
 
    - Seed the table with at least `Name`, `Slug`, and optionally `API Source` / `API ID`. The included [`airtable_restaurants_seed.csv`](./airtable_restaurants_seed.csv) provides a header with all fields and a sample row to import into Airtable.
+
+   > ℹ️ Airtable currently caps numeric precision at eight decimal places. The worker rounds latitude and longitude to that precision before saving to keep uploads compatible with the field settings above.
 
 4. **Run locally**
 

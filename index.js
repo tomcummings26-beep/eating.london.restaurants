@@ -151,7 +151,13 @@ const preferNumeric = (primary, fallback) => {
   return toNumberOrNull(fallback);
 };
 
-const coerceNumericField = (incoming, fallback, fieldName) => {
+const roundToPrecision = (value, precision) => {
+  if (typeof precision !== 'number' || !Number.isFinite(precision)) return value;
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+};
+
+const coerceNumericField = (incoming, fallback, fieldName, options = {}) => {
   const coerced = preferNumeric(incoming, fallback);
   if (
     coerced === null &&
@@ -164,7 +170,17 @@ const coerceNumericField = (incoming, fallback, fieldName) => {
     console.warn(
       `[airtable] Could not parse numeric value for ${fieldName}. Primary="${incoming}" Fallback="${fallback}"`
     );
+    return coerced;
   }
+
+  if (coerced === null) {
+    return coerced;
+  }
+
+  if (typeof options.precision === 'number') {
+    return roundToPrecision(coerced, options.precision);
+  }
+
   return coerced;
 };
 
@@ -324,8 +340,18 @@ async function enrichRecord(record) {
     const photoAttr = firstPhoto ? buildPhotoAttribution(firstPhoto) : '';
     const areaGuess = city || DEFAULT_CITY;
 
-    const lat = coerceNumericField(details.geometry?.location?.lat, fields['Lat'], 'Lat');
-    const lng = coerceNumericField(details.geometry?.location?.lng, fields['Lng'], 'Lng');
+    const lat = coerceNumericField(
+      details.geometry?.location?.lat,
+      fields['Lat'],
+      'Lat',
+      { precision: 8 }
+    );
+    const lng = coerceNumericField(
+      details.geometry?.location?.lng,
+      fields['Lng'],
+      'Lng',
+      { precision: 8 }
+    );
     const priceLevel = coerceNumericField(details.price_level, fields['Price Level'], 'Price Level');
     const ratingValue = coerceNumericField(details.rating, fields['Rating'], 'Rating');
     const userRatings = coerceNumericField(
