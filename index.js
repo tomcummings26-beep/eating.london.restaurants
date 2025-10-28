@@ -110,21 +110,62 @@ const pickEnrichmentStatus = (status, fallback) => {
 
 const currentTimestampForAirtable = () => new Date().toISOString();
 
+const currentDateForAirtable = () => currentTimestampForAirtable().split('T')[0];
+
 const resolveLastEnrichedValue = (existing) => {
-  if (!existing) return currentTimestampForAirtable();
-  if (existing instanceof Date) return currentTimestampForAirtable();
-  if (typeof existing === 'string' && existing.includes('T')) {
+  const hasExisting = existing !== undefined && existing !== null && existing !== '';
+  if (!hasExisting) {
+    return currentDateForAirtable();
+  }
+
+  if (existing instanceof Date) {
     return currentTimestampForAirtable();
   }
-  // Assume date-only column if the stored value lacks a time component.
-  return currentTimestampForAirtable().split('T')[0];
+
+  if (typeof existing === 'string') {
+    if (existing.includes('T')) {
+      return currentTimestampForAirtable();
+    }
+    return currentDateForAirtable();
+  }
+
+  return currentDateForAirtable();
 };
 
 const toNumberOrNull = (value) => {
-  if (value == null || value === '') return null;
-  const trimmed = typeof value === 'string' ? value.trim() : value;
-  const asNumber = typeof trimmed === 'number' ? trimmed : Number.parseFloat(trimmed);
-  return Number.isFinite(asNumber) ? asNumber : null;
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const trimmed = String(value).trim();
+  if (trimmed === '') return null;
+
+  const parsed = Number.parseFloat(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const preferNumeric = (primary, fallback) => {
+  const first = toNumberOrNull(primary);
+  if (first !== null) return first;
+  return toNumberOrNull(fallback);
+};
+
+const coerceNumericField = (incoming, fallback, fieldName) => {
+  const coerced = preferNumeric(incoming, fallback);
+  if (
+    coerced === null &&
+    [incoming, fallback].some((val) => {
+      if (val === undefined || val === null) return false;
+      if (typeof val === 'string' && val.trim() === '') return false;
+      return true;
+    })
+  ) {
+    console.warn(
+      `[airtable] Could not parse numeric value for ${fieldName}. Primary="${incoming}" Fallback="${fallback}"`
+    );
+  }
+  return coerced;
 };
 
 const toSlug = (name) =>
@@ -283,6 +324,16 @@ async function enrichRecord(record) {
     const photoAttr = firstPhoto ? buildPhotoAttribution(firstPhoto) : '';
     const areaGuess = city || DEFAULT_CITY;
 
+    const lat = coerceNumericField(details.geometry?.location?.lat, fields['Lat'], 'Lat');
+    const lng = coerceNumericField(details.geometry?.location?.lng, fields['Lng'], 'Lng');
+    const priceLevel = coerceNumericField(details.price_level, fields['Price Level'], 'Price Level');
+    const ratingValue = coerceNumericField(details.rating, fields['Rating'], 'Rating');
+    const userRatings = coerceNumericField(
+      details.user_ratings_total,
+      fields['User Ratings'],
+      'User Ratings'
+    );
+
     // Cuisine: Google returns types; take a human-friendly first type if available
     const cuisine =
       (details.types || [])
@@ -304,14 +355,14 @@ async function enrichRecord(record) {
       'Address': details.formatted_address || fields['Address'] || '',
       'City': city || fields['City'] || '',
       'Postcode': postcode || fields['Postcode'] || '',
-      'Lat': toNumberOrNull(details.geometry?.location?.lat ?? fields['Lat']),
-      'Lng': toNumberOrNull(details.geometry?.location?.lng ?? fields['Lng']),
+      'Lat': lat,
+      'Lng': lng,
       'Website': details.website || fields['Website'] || '',
       'Phone': details.formatted_phone_number || details.international_phone_number || fields['Phone'] || '',
       'Cuisine': cuisine,
-      'Price Level': toNumberOrNull(details.price_level ?? fields['Price Level']),
-      'Rating': toNumberOrNull(details.rating ?? fields['Rating']),
-      'User Ratings': toNumberOrNull(details.user_ratings_total ?? fields['User Ratings']),
+      'Price Level': priceLevel,
+      'Rating': ratingValue,
+      'User Ratings': userRatings,
       'Opening Hours JSON': JSON.stringify(details.opening_hours?.weekday_text || []),
       'Photo URL': photoUrl || fields['Photo URL'] || '',
       'Photo Attribution': photoAttr || fields['Photo Attribution'] || '',
