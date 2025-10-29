@@ -52,7 +52,10 @@ const matchSelectOption = (desired, options) => {
   return undefined;
 };
 
+let instagramStatusFieldAvailable = true;
+
 const pickInstagramStatus = (status, fallback, options, logger = console) => {
+  if (!instagramStatusFieldAvailable) return undefined;
   const matched = matchSelectOption(status, options);
   if (matched !== undefined) return matched;
   if (fallback) {
@@ -84,16 +87,50 @@ const limiter = new Bottleneck({
 
 const schedule = (task) => limiter.schedule(task);
 
+const stripInstagramStatusField = (fields) => {
+  if (instagramStatusFieldAvailable) return fields;
+  if (!fields || typeof fields !== 'object') return fields;
+  if (!Object.prototype.hasOwnProperty.call(fields, 'Instagram Status')) return fields;
+  const clone = { ...fields };
+  delete clone['Instagram Status'];
+  return clone;
+};
+
+const prepareBatchForUpdate = (batch) =>
+  batch
+    .map(({ id, fields }) => ({
+      id,
+      fields: stripInstagramStatusField(fields)
+    }))
+    .filter(({ fields }) => fields && Object.keys(fields).length);
+
+const isMissingInstagramStatusFieldError = (error) =>
+  instagramStatusFieldAvailable &&
+  error?.statusCode === 422 &&
+  typeof error?.message === 'string' &&
+  error.message.toLowerCase().includes('instagram status');
+
 const flushUpdates = async (updates, logger) => {
   if (!updates.length) return 0;
   const batch = updates.splice(0, 10);
+  const prepared = prepareBatchForUpdate(batch);
+  if (!prepared.length) {
+    return 0;
+  }
   try {
-    await schedule(() => table.update(batch));
-    logger?.log?.(`[instagram] Updated ${batch.length} record(s).`);
-    return batch.length;
+    await schedule(() => table.update(prepared));
+    logger?.log?.(`[instagram] Updated ${prepared.length} record(s).`);
+    return prepared.length;
   } catch (error) {
+    if (isMissingInstagramStatusFieldError(error)) {
+      instagramStatusFieldAvailable = false;
+      logger?.warn?.(
+        '[instagram] Instagram Status field not found; proceeding without writing status updates.'
+      );
+      return flushUpdates(batch, logger);
+    }
     logger?.error?.(
-      `[instagram] Failed to update ${batch.length} record(s): ${error?.message || error}`
+      `[instagram] Failed to update ${prepared.length} record(s): ${error?.message || error}`
     );
     return 0;
   }
@@ -114,7 +151,9 @@ async function run() {
     const fields = record.fields || {};
     const name = fields['Name'] || record.id;
     const website = fields['Website'] || '';
-    const existingStatusRaw = (fields['Instagram Status'] || '').trim();
+    const existingStatusRaw = instagramStatusFieldAvailable
+      ? (fields['Instagram Status'] || '').trim()
+      : '';
 
     const existingInstagramRaw = (fields['Instagram'] || '').trim();
     const existingInstagram = normalizeInstagramProfileUrl(existingInstagramRaw);
@@ -125,7 +164,7 @@ async function run() {
         patchFields['Instagram'] = existingInstagram;
         console.log(`[instagram] Normalised ${name}: ${existingInstagram}`);
       }
-      if (desiredStatus && desiredStatus !== existingStatusRaw) {
+      if (instagramStatusFieldAvailable && desiredStatus && desiredStatus !== existingStatusRaw) {
         patchFields['Instagram Status'] = desiredStatus;
       }
       if (Object.keys(patchFields).length) {
@@ -140,7 +179,7 @@ async function run() {
 
     if (!website) {
       const desiredStatus = pickInstagramStatus('not_found', existingStatusRaw, instagramStatusOptions);
-      if (desiredStatus && desiredStatus !== existingStatusRaw) {
+      if (instagramStatusFieldAvailable && desiredStatus && desiredStatus !== existingStatusRaw) {
         updates.push({ id: record.id, fields: { 'Instagram Status': desiredStatus } });
         if (updates.length >= 10) {
           updatedCount += await flushUpdates(updates, console);
@@ -172,7 +211,7 @@ async function run() {
         existingStatusRaw,
         instagramStatusOptions
       );
-      if (desiredStatus && desiredStatus !== existingStatusRaw) {
+      if (instagramStatusFieldAvailable && desiredStatus && desiredStatus !== existingStatusRaw) {
         updates.push({ id: record.id, fields: { 'Instagram Status': desiredStatus } });
         if (updates.length >= 10) {
           updatedCount += await flushUpdates(updates, console);
@@ -184,12 +223,15 @@ async function run() {
       continue;
     }
 
+    const foundStatus = pickInstagramStatus('found', existingStatusRaw, instagramStatusOptions);
+    const updateFields = { Instagram: instagramUrl };
+    if (instagramStatusFieldAvailable && foundStatus) {
+      updateFields['Instagram Status'] = foundStatus;
+    }
+
     updates.push({
       id: record.id,
-      fields: {
-        Instagram: instagramUrl,
-        'Instagram Status': pickInstagramStatus('found', existingStatusRaw, instagramStatusOptions)
-      }
+      fields: updateFields
     });
 
     if (!fields['Instagram'] || forceRecheck) {

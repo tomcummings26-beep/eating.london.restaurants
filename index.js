@@ -112,6 +112,8 @@ const instagramStatusOptions = parseSelectOptions(
   ['pending', 'found', 'not_found', 'error', 'retry']
 );
 
+let instagramStatusFieldAvailable = true;
+
 const matchSelectOption = (desired, options, fieldName) => {
   if (!desired) return undefined;
   const normalized = desired.trim().toLowerCase();
@@ -141,6 +143,7 @@ const pickEnrichmentStatus = (status, fallback) => {
 };
 
 const pickInstagramStatus = (status, fallback) => {
+  if (!instagramStatusFieldAvailable) return undefined;
   const matched = matchSelectOption(status, instagramStatusOptions, 'Instagram Status');
   if (matched !== undefined) return matched;
   if (fallback) {
@@ -235,6 +238,29 @@ const toSlug = (name) =>
 
 const clean = (s) => (s == null ? '' : String(s).trim());
 
+const stripInstagramStatusField = (input) => {
+  if (instagramStatusFieldAvailable) return input;
+  if (!input || typeof input !== 'object') return input;
+  if (!Object.prototype.hasOwnProperty.call(input, 'Instagram Status')) return input;
+  const clone = { ...input };
+  delete clone['Instagram Status'];
+  return clone;
+};
+
+const prepareRecordsForInstagramStatus = (records) =>
+  records
+    .map((entry) => ({
+      ...entry,
+      fields: stripInstagramStatusField(entry.fields)
+    }))
+    .filter((entry) => entry.fields && Object.keys(entry.fields).length);
+
+const isMissingInstagramStatusFieldError = (error) =>
+  instagramStatusFieldAvailable &&
+  error?.statusCode === 422 &&
+  typeof error?.message === 'string' &&
+  error.message.toLowerCase().includes('instagram status');
+
 const upsertBySlug = async (slug, fields, recordId) => {
   const sanitizedSlug = clean(slug);
   const payload = { ...fields };
@@ -243,13 +269,34 @@ const upsertBySlug = async (slug, fields, recordId) => {
     payload['Slug'] = sanitizedSlug;
   }
 
+  const executeUpdate = async (records, action) => {
+    const prepared = prepareRecordsForInstagramStatus(records);
+    if (!prepared.length) return [];
+    try {
+      return await table[action](prepared);
+    } catch (error) {
+      if (isMissingInstagramStatusFieldError(error)) {
+        instagramStatusFieldAvailable = false;
+        console.warn(
+          '[airtable] Instagram Status field not found; skipping Instagram status updates going forward.'
+        );
+        const retried = prepareRecordsForInstagramStatus(records);
+        if (!retried.length) {
+          return [];
+        }
+        return await table[action](retried);
+      }
+      throw error;
+    }
+  };
+
   if (recordId) {
-    await table.update([{ id: recordId, fields: payload }]);
+    await executeUpdate([{ id: recordId, fields: payload }], 'update');
     return recordId;
   }
 
   if (!sanitizedSlug) {
-    const createdWithoutSlug = await table.create([{ fields: payload }]);
+    const createdWithoutSlug = await executeUpdate([{ fields: payload }], 'create');
     return createdWithoutSlug[0].id;
   }
 
@@ -260,11 +307,11 @@ const upsertBySlug = async (slug, fields, recordId) => {
     .firstPage();
   if (found.length) {
     const id = found[0].id;
-    await table.update([{ id, fields: payload }]);
+    await executeUpdate([{ id, fields: payload }], 'update');
     return id;
   }
 
-  const created = await table.create([{ fields: payload }]);
+  const created = await executeUpdate([{ fields: payload }], 'create');
   return created[0].id;
 };
 
@@ -478,11 +525,13 @@ async function enrichRecord(record) {
 
     const existingInstagramRaw = clean(fields['Instagram']);
     let instagram = normalizeInstagramProfileUrl(existingInstagramRaw);
-    const existingInstagramStatus = clean(fields['Instagram Status']);
+    const existingInstagramStatus = instagramStatusFieldAvailable
+      ? clean(fields['Instagram Status'])
+      : '';
     let instagramStatusToSave;
 
     const setInstagramStatus = (status) => {
-      if (!status) return;
+      if (!status || !instagramStatusFieldAvailable) return;
       const matched = pickInstagramStatus(status, existingInstagramStatus);
       if (matched) {
         instagramStatusToSave = matched;
@@ -541,7 +590,7 @@ async function enrichRecord(record) {
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
 
-    if (instagramStatusToSave) {
+    if (instagramStatusFieldAvailable && instagramStatusToSave) {
       payload['Instagram Status'] = instagramStatusToSave;
     }
 
@@ -578,11 +627,13 @@ const buildStatusFilterFormula = (statuses) => {
 
 async function fetchPendingBatch(limit) {
   const statusFilter = buildStatusFilterFormula(statusesToReprocess);
-  const instagramNeedsWork = `AND(
+  const instagramNeedsWork = instagramStatusFieldAvailable
+    ? `AND(
     OR({Instagram} = BLANK(), {Instagram} = ''),
     NOT(LOWER({Instagram Status}) = 'not_found'),
     NOT(LOWER({Instagram Status}) = 'error')
-  )`;
+  )`
+    : `OR({Instagram} = BLANK(), {Instagram} = '')`;
 
   const filter = `AND(
     ${statusFilter},
@@ -595,12 +646,32 @@ async function fetchPendingBatch(limit) {
   )`;
 
   const collected = [];
-  await table
-    .select({ filterByFormula: filter, maxRecords: limit })
-    .eachPage((records, fetchNext) => {
-      collected.push(...records);
-      fetchNext();
-    });
+
+  try {
+    await table
+      .select({ filterByFormula: filter, maxRecords: limit })
+      .eachPage((records, fetchNext) => {
+        collected.push(...records);
+        fetchNext();
+      });
+  } catch (err) {
+    const missingInstagramStatusField =
+      instagramStatusFieldAvailable &&
+      err?.statusCode === 422 &&
+      err?.error === 'INVALID_FILTER_BY_FORMULA' &&
+      typeof err?.message === 'string' &&
+      err.message.toLowerCase().includes('instagram status');
+
+    if (missingInstagramStatusField) {
+      instagramStatusFieldAvailable = false;
+      console.warn(
+        '[airtable] Instagram Status field not found; skipping Instagram status filtering and updates.'
+      );
+      return fetchPendingBatch(limit);
+    }
+
+    throw err;
+  }
 
   return collected;
 }
