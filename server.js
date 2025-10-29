@@ -83,6 +83,7 @@ const toRestaurant = (record) => {
     rating: numericOrNull(fields['Rating']),
     userRatings: numericOrNull(fields['User Ratings']),
     instagram: fields['Instagram'] || '',
+    instagramStatus: fields['Instagram Status'] || null,
     openingHours: parseOpeningHours(fields['Opening Hours JSON']),
     photoUrl: fields['Photo URL'] || '',
     photoAttribution: fields['Photo Attribution'] || '',

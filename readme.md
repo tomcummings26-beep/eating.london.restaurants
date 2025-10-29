@@ -64,6 +64,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      | Photo Attribution | Long text |
      | Description | Long text |
      | Instagram | URL |
+     | Instagram Status | Single select (`pending` / `found` / `not_found` / `error` / `retry`) |
      | Last Enriched | Date |
      | Enrichment Status | Single select (`pending` / `enriched` / `not_found` / `error`) |
      | Notes | Long text |
@@ -81,7 +82,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     ```
 
    The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and*
-    are still missing a Place ID, photo, description, or Instagram profile. Records marked as `not_found` are ignored; everything else with missing
+    are still missing a Place ID, photo, description, or Instagram profile. Rows whose **Instagram Status** is `not_found` or `error` are skipped so the worker doesn’t loop forever on websites that block crawlers. To retry one of those rows, clear the Instagram link and set **Instagram Status** to `retry` (or blank) before running the worker again. Records marked as `not_found` in the main enrichment status are ignored; everything else with missing
     data is eligible, so you no longer need to toggle a row back to `pending` just to fill in a new Instagram link. The script continues automatically until no matching
     records remain. If you want to stop after a single batch—for example,
      while testing rate limits—run the `once` script instead:
@@ -108,10 +109,11 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     npm run instagram
     ```
 
-    Walks the entire table, fetches each restaurant website, and looks for a canonical Instagram profile link (regardless of `Enrichment Status`). Only rows with
-    an empty `Instagram` column are updated by default—pass `--force` (via `npm run instagram:force`) to re-check every row even
+    Walks the entire table, fetches each restaurant website, and looks for a canonical Instagram profile link (regardless of `Enrichment Status`). Rows whose Instagram links are blank *and* whose **Instagram Status** is not `not_found`/`error` are updated by default—pass `--force` (via `npm run instagram:force`) to re-check every row even
     if it already contains a value. The script honours `INSTAGRAM_CONCURRENCY` and `INSTAGRAM_REQUEST_INTERVAL_MS` to control
     crawl pacing.
+
+    When the crawler can’t find a profile—or the target site blocks the request—it records `not_found` or `error` in **Instagram Status** so future runs don’t keep retrying the same website. Reset the status to `retry` to queue it back up after you’ve fixed a website URL or want to take another shot manually.
 
   - **JSON feed server:**
 

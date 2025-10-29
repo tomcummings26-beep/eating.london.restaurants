@@ -34,7 +34,8 @@ const {
   CONCURRENCY = '2',
   SLEEP_MS_BETWEEN_REQUESTS = '250',
   OPENAI_API_KEY,
-  AIRTABLE_ENRICHMENT_STATUS_OPTIONS
+  AIRTABLE_ENRICHMENT_STATUS_OPTIONS,
+  AIRTABLE_INSTAGRAM_STATUS_OPTIONS
 } = process.env;
 
 const cliArgs = process.argv.slice(2);
@@ -106,6 +107,11 @@ const enrichmentStatusOptions = parseSelectOptions(
   ['pending', 'enriched', 'not_found', 'error']
 );
 
+const instagramStatusOptions = parseSelectOptions(
+  AIRTABLE_INSTAGRAM_STATUS_OPTIONS,
+  ['pending', 'found', 'not_found', 'error', 'retry']
+);
+
 const matchSelectOption = (desired, options, fieldName) => {
   if (!desired) return undefined;
   const normalized = desired.trim().toLowerCase();
@@ -128,6 +134,20 @@ const pickEnrichmentStatus = (status, fallback) => {
       fallback,
       enrichmentStatusOptions,
       'Enrichment Status'
+    );
+    if (fallbackMatched !== undefined) return fallbackMatched;
+  }
+  return undefined;
+};
+
+const pickInstagramStatus = (status, fallback) => {
+  const matched = matchSelectOption(status, instagramStatusOptions, 'Instagram Status');
+  if (matched !== undefined) return matched;
+  if (fallback) {
+    const fallbackMatched = matchSelectOption(
+      fallback,
+      instagramStatusOptions,
+      'Instagram Status'
     );
     if (fallbackMatched !== undefined) return fallbackMatched;
   }
@@ -456,17 +476,44 @@ async function enrichRecord(record) {
       });
     }
 
-    let instagram = normalizeInstagramProfileUrl(clean(fields['Instagram']));
-    if (!instagram) {
+    const existingInstagramRaw = clean(fields['Instagram']);
+    let instagram = normalizeInstagramProfileUrl(existingInstagramRaw);
+    const existingInstagramStatus = clean(fields['Instagram Status']);
+    let instagramStatusToSave;
+
+    const setInstagramStatus = (status) => {
+      if (!status) return;
+      const matched = pickInstagramStatus(status, existingInstagramStatus);
+      if (matched) {
+        instagramStatusToSave = matched;
+      }
+    };
+
+    if (instagram) {
+      if (instagram !== existingInstagramRaw && existingInstagramRaw) {
+        console.log(`[instagram] Normalised ${name}: ${instagram}`);
+      }
+      setInstagramStatus('found');
+    } else {
       const websiteForInstagram = clean(details.website || fields['Website']);
       if (websiteForInstagram) {
-        instagram = await findInstagramProfile(websiteForInstagram, {
+        const lookup = await findInstagramProfile(websiteForInstagram, {
           scheduler: (task) => limiter.schedule(task),
           logger: console
         });
-        if (instagram && !fields['Instagram']) {
-          console.log(`[instagram] Captured ${instagram} for ${name}`);
+        instagram = lookup.url;
+        if (instagram) {
+          if (!fields['Instagram']) {
+            console.log(`[instagram] Captured ${instagram} for ${name}`);
+          }
+          setInstagramStatus('found');
+        } else if (lookup.status === 'error') {
+          setInstagramStatus('error');
+        } else {
+          setInstagramStatus('not_found');
         }
+      } else {
+        setInstagramStatus('not_found');
       }
     }
 
@@ -493,6 +540,10 @@ async function enrichRecord(record) {
       'Instagram': instagram || '',
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
+
+    if (instagramStatusToSave) {
+      payload['Instagram Status'] = instagramStatusToSave;
+    }
 
     const enrichedStatus = pickEnrichmentStatus('enriched');
     if (enrichedStatus) payload['Enrichment Status'] = enrichedStatus;
@@ -527,14 +578,19 @@ const buildStatusFilterFormula = (statuses) => {
 
 async function fetchPendingBatch(limit) {
   const statusFilter = buildStatusFilterFormula(statusesToReprocess);
+  const instagramNeedsWork = `AND(
+    OR({Instagram} = BLANK(), {Instagram} = ''),
+    NOT(LOWER({Instagram Status}) = 'not_found'),
+    NOT(LOWER({Instagram Status}) = 'error')
+  )`;
+
   const filter = `AND(
     ${statusFilter},
     OR(
       {Place ID} = BLANK(),
       {Photo URL} = BLANK(),
       {Description} = BLANK(),
-      {Instagram} = BLANK(),
-      {Instagram} = ''
+      ${instagramNeedsWork}
     )
   )`;
 

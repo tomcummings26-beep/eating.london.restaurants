@@ -23,13 +23,54 @@ const {
   AIRTABLE_BASE_ID,
   AIRTABLE_TABLE_NAME = 'Restaurants',
   INSTAGRAM_CONCURRENCY = '1',
-  INSTAGRAM_REQUEST_INTERVAL_MS = '500'
+  INSTAGRAM_REQUEST_INTERVAL_MS = '500',
+  AIRTABLE_INSTAGRAM_STATUS_OPTIONS
 } = process.env;
 
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
   console.error('Missing Airtable configuration. Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID.');
   process.exit(1);
 }
+
+const parseSelectOptions = (value, fallback = []) => {
+  if (!value) return [...fallback];
+  const entries = value
+    .split(',')
+    .map((option) => option.trim())
+    .filter(Boolean);
+  return entries.length ? entries : [...fallback];
+};
+
+const matchSelectOption = (desired, options) => {
+  if (!desired) return undefined;
+  const normalized = desired.trim().toLowerCase();
+  for (const option of options) {
+    if (option.trim().toLowerCase() === normalized) {
+      return option;
+    }
+  }
+  return undefined;
+};
+
+const pickInstagramStatus = (status, fallback, options, logger = console) => {
+  const matched = matchSelectOption(status, options);
+  if (matched !== undefined) return matched;
+  if (fallback) {
+    const fallbackMatched = matchSelectOption(fallback, options);
+    if (fallbackMatched !== undefined) return fallbackMatched;
+  }
+  if (status) {
+    logger?.warn?.(
+      `[instagram] Unable to apply Instagram Status "${status}". Valid options: ${options.join(', ')}`
+    );
+  }
+  return undefined;
+};
+
+const instagramStatusOptions = parseSelectOptions(
+  AIRTABLE_INSTAGRAM_STATUS_OPTIONS,
+  ['pending', 'found', 'not_found', 'error', 'retry']
+);
 
 const forceRecheck = process.argv.includes('--force');
 
@@ -73,16 +114,22 @@ async function run() {
     const fields = record.fields || {};
     const name = fields['Name'] || record.id;
     const website = fields['Website'] || '';
+    const existingStatusRaw = (fields['Instagram Status'] || '').trim();
 
     const existingInstagramRaw = (fields['Instagram'] || '').trim();
     const existingInstagram = normalizeInstagramProfileUrl(existingInstagramRaw);
     if (existingInstagram && !forceRecheck) {
+      const desiredStatus = pickInstagramStatus('found', existingStatusRaw, instagramStatusOptions);
+      const patchFields = {};
       if (existingInstagram !== existingInstagramRaw) {
-        updates.push({
-          id: record.id,
-          fields: { Instagram: existingInstagram }
-        });
+        patchFields['Instagram'] = existingInstagram;
         console.log(`[instagram] Normalised ${name}: ${existingInstagram}`);
+      }
+      if (desiredStatus && desiredStatus !== existingStatusRaw) {
+        patchFields['Instagram Status'] = desiredStatus;
+      }
+      if (Object.keys(patchFields).length) {
+        updates.push({ id: record.id, fields: patchFields });
         if (updates.length >= 10) {
           updatedCount += await flushUpdates(updates, console);
         }
@@ -92,28 +139,57 @@ async function run() {
     }
 
     if (!website) {
+      const desiredStatus = pickInstagramStatus('not_found', existingStatusRaw, instagramStatusOptions);
+      if (desiredStatus && desiredStatus !== existingStatusRaw) {
+        updates.push({ id: record.id, fields: { 'Instagram Status': desiredStatus } });
+        if (updates.length >= 10) {
+          updatedCount += await flushUpdates(updates, console);
+        }
+      }
       skipped += 1;
       continue;
     }
 
     const cached = instagramCache.get(website);
-    let instagramUrl = cached ?? '';
+    let instagramUrl = cached?.url ?? '';
+    let lookupStatus = cached?.status ?? '';
+    let lookupReason = cached?.reason ?? '';
 
     if (!instagramUrl || forceRecheck) {
-      instagramUrl = await findInstagramProfile(website, {
+      const lookup = await findInstagramProfile(website, {
         scheduler: schedule,
         logger: console
       });
-      instagramCache.set(website, instagramUrl);
+      instagramUrl = lookup.url;
+      lookupStatus = lookup.status;
+      lookupReason = lookup.reason || '';
+      instagramCache.set(website, lookup);
     }
 
     if (!instagramUrl) {
+      const desiredStatus = pickInstagramStatus(
+        lookupStatus === 'error' ? 'error' : 'not_found',
+        existingStatusRaw,
+        instagramStatusOptions
+      );
+      if (desiredStatus && desiredStatus !== existingStatusRaw) {
+        updates.push({ id: record.id, fields: { 'Instagram Status': desiredStatus } });
+        if (updates.length >= 10) {
+          updatedCount += await flushUpdates(updates, console);
+        }
+      }
+      if (lookupStatus === 'error' && lookupReason) {
+        console.log(`[instagram] ${name}: status error (${lookupReason})`);
+      }
       continue;
     }
 
     updates.push({
       id: record.id,
-      fields: { Instagram: instagramUrl }
+      fields: {
+        Instagram: instagramUrl,
+        'Instagram Status': pickInstagramStatus('found', existingStatusRaw, instagramStatusOptions)
+      }
     });
 
     if (!fields['Instagram'] || forceRecheck) {
