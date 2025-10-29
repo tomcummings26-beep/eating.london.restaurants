@@ -75,8 +75,10 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
    npm run start
    ```
 
-  The worker will process up to `MAX_RECORDS_PER_RUN` entries marked as `pending` (or missing Place ID / Photo / Description)
-  at a time and continue automatically until no matching records remain. If you want to stop after a single batch—for example,
+  The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** is `pending`, `error`, or blank *and*
+  are still missing a Place ID, photo, or description. Records marked as `enriched` or `not_found` are ignored even if they
+  have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
+  records remain. If you want to stop after a single batch—for example,
   while testing rate limits—run the `once` script instead:
 
   ```bash

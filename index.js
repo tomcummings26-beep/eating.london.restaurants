@@ -481,13 +481,18 @@ async function enrichRecord(record) {
 }
 
 async function fetchPendingBatch(limit) {
-  const filter = `OR(
-    {Enrichment Status} = 'pending',
-    {Enrichment Status} = '',
-    {Enrichment Status} = BLANK(),
-    {Place ID} = BLANK(),
-    {Photo URL} = BLANK(),
-    {Description} = BLANK()
+  const filter = `AND(
+    OR(
+      {Enrichment Status} = 'pending',
+      {Enrichment Status} = 'error',
+      {Enrichment Status} = '',
+      {Enrichment Status} = BLANK()
+    ),
+    OR(
+      {Place ID} = BLANK(),
+      {Photo URL} = BLANK(),
+      {Description} = BLANK()
+    )
   )`;
 
   const collected = [];
