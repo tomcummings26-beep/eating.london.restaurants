@@ -147,6 +147,20 @@ app.use((req, res) => {
   res.status(404).json({ error: 'not_found' });
 });
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Restaurant feed available on port ${PORT}`);
 });
+
+const shutdown = (signal) => {
+  console.log(`Received ${signal}. Shutting down restaurant feed server…`);
+  httpServer.close((err) => {
+    if (err) {
+      console.error('Error during server shutdown:', err);
+      process.exit(1);
+    }
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

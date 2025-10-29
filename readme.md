@@ -74,16 +74,16 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 
 4. **Run locally**
 
-   - **Worker:**
+  - **Worker:**
 
-     ```bash
-     npm run worker
-     ```
+    ```bash
+    npm start
+    ```
 
-    The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
+   The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
     are still missing a Place ID, photo, description, or Instagram profile. Records marked as `enriched` or `not_found` are ignored even if they
-     have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
-     records remain. If you want to stop after a single batch—for example,
+    have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
+    records remain. If you want to stop after a single batch—for example,
      while testing rate limits—run the `once` script instead:
 
      ```bash
@@ -116,9 +116,9 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
   - **JSON feed server:**
 
      ```bash
-     npm start
-     # or
      npm run serve
+     # or
+     START_MODE=server npm start
      ```
 
      This launches an Express server that exposes `GET /restaurants`, returning a cached JSON payload of the Airtable table. The server honours
@@ -132,8 +132,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      - Or use the CLI: `railway variables set AIRTABLE_API_KEY=...` (repeat for each variable).
      - Verify they are available with `railway variables` or `railway run node -e "console.log(process.env.AIRTABLE_API_KEY)"`.
    - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
-   - Deploy (Railway will run `npm install` followed by `npm start`, which launches the JSON feed server).
-   - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run worker`.
+   - Deploy (Railway will run `npm install` followed by `npm start`; by default this executes the worker. Set `START_MODE=server` in Railway Variables or change the start command to `npm run serve` if you want the JSON feed service to be the primary process).
+   - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm start` or `npm run worker` (both run the worker).
    - For manual backfills, trigger `npm run backfill` from the Railway run tab to walk through every pending record in batches of
      `MAX_RECORDS_PER_RUN`.
 

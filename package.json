@@ -4,8 +4,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js",
-    "serve": "node server.js",
+    "start": "node start.js",
+    "serve": "START_MODE=server node start.js",
     "worker": "node index.js",
     "worker:once": "node index.js --once",
     "worker:backfill": "node index.js --all",
