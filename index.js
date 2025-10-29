@@ -37,8 +37,10 @@ const {
 } = process.env;
 
 const cliArgs = process.argv.slice(2);
-const runAll = cliArgs.includes('--all');
 const maxOverrideArg = cliArgs.find((arg) => arg.startsWith('--max='));
+const runOnceFlag = cliArgs.includes('--once');
+const runAllFlag = cliArgs.includes('--all');
+const runContinuously = runAllFlag || !runOnceFlag;
 
 const parseMaxRecords = () => {
   const defaultMax = Number(MAX_RECORDS_PER_RUN);
@@ -525,7 +527,7 @@ async function run() {
       await sleep(Number(SLEEP_MS_BETWEEN_REQUESTS));
     }
 
-    if (!runAll) {
+    if (!runContinuously) {
       break;
     }
   }

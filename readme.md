@@ -75,15 +75,21 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
    npm run start
    ```
 
-   The worker will process up to `MAX_RECORDS_PER_RUN` entries marked as `pending` (or missing Place ID / Photo / Description).
-   Rerun the command to pick up the next batch after the first 50 are marked as enriched. To drain the entire queue in one go,
-   run the backfill script:
+  The worker will process up to `MAX_RECORDS_PER_RUN` entries marked as `pending` (or missing Place ID / Photo / Description)
+  at a time and continue automatically until no matching records remain. If you want to stop after a single batch—for example,
+  while testing rate limits—run the `once` script instead:
 
-   ```bash
-   npm run backfill         # equivalent to `node index.js --all`
-   ```
+  ```bash
+  npm run once             # equivalent to `node index.js --once`
+  ```
 
-   You can also override the batch size at runtime without editing `.env`:
+  To explicitly loop forever (useful if you set a very small `MAX_RECORDS_PER_RUN`), you can still run the backfill helper:
+
+  ```bash
+  npm run backfill         # equivalent to `node index.js --all`
+  ```
+
+  You can also override the batch size at runtime without editing `.env`:
 
    ```bash
    node index.js --max=100   # process up to 100 records in this invocation
