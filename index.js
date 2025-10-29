@@ -480,14 +480,21 @@ async function enrichRecord(record) {
   }
 }
 
+const statusesToReprocess = ['pending', 'error'];
+
+const buildStatusFilterFormula = (statuses) => {
+  const predicates = statuses.map(
+    (status) => `LOWER({Enrichment Status}) = '${status.toLowerCase()}'`
+  );
+  predicates.push("{Enrichment Status} = ''");
+  predicates.push('{Enrichment Status} = BLANK()');
+  return `OR(\n      ${predicates.join(',\n      ')}\n    )`;
+};
+
 async function fetchPendingBatch(limit) {
+  const statusFilter = buildStatusFilterFormula(statusesToReprocess);
   const filter = `AND(
-    OR(
-      {Enrichment Status} = 'pending',
-      {Enrichment Status} = 'error',
-      {Enrichment Status} = '',
-      {Enrichment Status} = BLANK()
-    ),
+    ${statusFilter},
     OR(
       {Place ID} = BLANK(),
       {Photo URL} = BLANK(),
