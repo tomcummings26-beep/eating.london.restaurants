@@ -7,6 +7,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 - Idempotent upsert flow keyed by `Slug`
 - Google Places Text Search + Details + Photos hydration
 - Optional OpenAI-powered description blurb generation
+- Automatic Instagram profile discovery from restaurant websites
 - Rate limiting to protect Google and Airtable quotas
 - Configurable concurrency and batch limits via environment variables
 - JSON feed endpoint (`/restaurants`) for Framer or other consumers
@@ -62,6 +63,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      | Photo URL | URL |
      | Photo Attribution | Long text |
      | Description | Long text |
+     | Instagram | URL |
      | Last Enriched | Date |
      | Enrichment Status | Single select (`pending` / `enriched` / `not_found` / `error`) |
      | Notes | Long text |
@@ -78,8 +80,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      npm run worker
      ```
 
-     The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
-     are still missing a Place ID, photo, or description. Records marked as `enriched` or `not_found` are ignored even if they
+    The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
+    are still missing a Place ID, photo, description, or Instagram profile. Records marked as `enriched` or `not_found` are ignored even if they
      have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
      records remain. If you want to stop after a single batch—for example,
      while testing rate limits—run the `once` script instead:
@@ -100,7 +102,18 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      node index.js --max=100   # process up to 100 records in this invocation
      ```
 
-   - **JSON feed server:**
+  - **Instagram backfill (optional):**
+
+    ```bash
+    npm run instagram
+    ```
+
+    Walks the entire table, fetches each restaurant website, and looks for a canonical Instagram profile link. Only rows with
+    an empty `Instagram` column are updated by default—pass `--force` (via `npm run instagram:force`) to re-check every row even
+    if it already contains a value. The script honours `INSTAGRAM_CONCURRENCY` and `INSTAGRAM_REQUEST_INTERVAL_MS` to control
+    crawl pacing.
+
+  - **JSON feed server:**
 
      ```bash
      npm start
@@ -133,7 +146,7 @@ The Express server mounted by `npm start` exposes the following endpoints:
 
 The handler caches Airtable responses in-memory for `RESTAURANTS_CACHE_TTL_MS` milliseconds (default: `300000`, i.e. 5 minutes). Append
 `?refresh=true` to bypass the cache on-demand. Responses include permissive CORS headers so Framer or other frontend environments can fetch
-the JSON directly from Railway.
+the JSON directly from Railway, and each restaurant entry exposes the Instagram profile URL when available.
 
 ## Staying in sync with `main`
 

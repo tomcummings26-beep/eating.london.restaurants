@@ -3,6 +3,7 @@ import Airtable from 'airtable';
 import axios from 'axios';
 import Bottleneck from 'bottleneck';
 import slugify from 'slugify';
+import { findInstagramProfile, normalizeInstagramProfileUrl } from './lib/instagram.js';
 
 // In production (Railway) configuration must come from environment variables.
 // For local development we still allow a .env file.
@@ -455,6 +456,20 @@ async function enrichRecord(record) {
       });
     }
 
+    let instagram = normalizeInstagramProfileUrl(clean(fields['Instagram']));
+    if (!instagram) {
+      const websiteForInstagram = clean(details.website || fields['Website']);
+      if (websiteForInstagram) {
+        instagram = await findInstagramProfile(websiteForInstagram, {
+          scheduler: (task) => limiter.schedule(task),
+          logger: console
+        });
+        if (instagram && !fields['Instagram']) {
+          console.log(`[instagram] Captured ${instagram} for ${name}`);
+        }
+      }
+    }
+
     // Step 3: Upsert
     const payload = {
       'Name': details.name || name,
@@ -475,6 +490,7 @@ async function enrichRecord(record) {
       'Photo URL': photoUrl || fields['Photo URL'] || '',
       'Photo Attribution': photoAttr || fields['Photo Attribution'] || '',
       'Description': description || fields['Description'] || '',
+      'Instagram': instagram || '',
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
 
@@ -516,7 +532,9 @@ async function fetchPendingBatch(limit) {
     OR(
       {Place ID} = BLANK(),
       {Photo URL} = BLANK(),
-      {Description} = BLANK()
+      {Description} = BLANK(),
+      {Instagram} = BLANK(),
+      {Instagram} = ''
     )
   )`;
 
