@@ -36,6 +36,29 @@ const {
   AIRTABLE_ENRICHMENT_STATUS_OPTIONS
 } = process.env;
 
+const cliArgs = process.argv.slice(2);
+const runAll = cliArgs.includes('--all');
+const maxOverrideArg = cliArgs.find((arg) => arg.startsWith('--max='));
+
+const parseMaxRecords = () => {
+  const defaultMax = Number(MAX_RECORDS_PER_RUN);
+  const sanitizedDefault = Number.isFinite(defaultMax) && defaultMax > 0 ? defaultMax : 50;
+
+  if (!maxOverrideArg) {
+    return sanitizedDefault;
+  }
+
+  const parsed = Number.parseInt(maxOverrideArg.split('=')[1], 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `Ignored --max override "${maxOverrideArg}" because it is not a positive integer. Using ${sanitizedDefault}.`
+    );
+    return sanitizedDefault;
+  }
+
+  return parsed;
+};
+
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID || !GOOGLE_PLACES_API_KEY) {
   console.error('Missing required env vars. Please set AIRTABLE_API_KEY, AIRTABLE_BASE_ID, GOOGLE_PLACES_API_KEY.');
   process.exit(1);
@@ -268,9 +291,43 @@ function buildPhotoAttribution(photoObj) {
 }
 
 // ---------- Optional AI copy ----------
-async function generateDescription({ name, cuisine, area }) {
+const hashString = (value) => {
+  if (!value) return 0;
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0; // force 32-bit integer
+  }
+  return Math.abs(hash);
+};
+
+const descriptionPromptTemplates = [
+  ({ name, cuisine, area }) => `Craft a 65-90 word featurette for a London restaurant profile.
+Lead with a vivid sensory scene from ${area || 'London'} that does not begin with the words "Discover" or "Experience".
+Highlight what sets ${name} apart, referencing its ${cuisine || 'signature'} influences or standout dishes.
+Finish with an inviting line that hints at the vibe without repeating earlier phrases.
+Avoid cliches and keep the tone energetic yet polished.`,
+  ({ name, cuisine, area }) => `Write a tight 65-90 word editorial blurb about ${name} in ${area || 'London'}.
+Open with a compelling statement about the ambience or hospitality—no generic "Discover" openers.
+Weave in a specific detail about the ${cuisine || 'house'} menu or a service ritual.
+Close with a call to action that feels bespoke to this venue.
+Keep the language modern, no emojis, and do not repeat the restaurant name more than once.`,
+  ({ name, cuisine, area }) => `Produce a 65-90 word mini-review for a dining guide.
+Start with a line that evokes the atmosphere of ${name} without using the phrases "Discover", "Experience", or "culinary gem".
+Describe one memorable element of its ${cuisine || 'kitchen'} or beverage program and mention ${area || 'London'} context once.
+End with a forward-looking note that invites return visits in your own words.
+Maintain an upbeat, sophisticated tone with varied sentence structure.`,
+];
+
+const selectDescriptionPrompt = (info) => {
+  const key = `${info.slug || ''}:${info.name || ''}`;
+  const index = hashString(key) % descriptionPromptTemplates.length;
+  return descriptionPromptTemplates[index](info);
+};
+
+async function generateDescription({ name, cuisine, area, slug }) {
   if (!OPENAI_API_KEY) return ''; // optional
-  const prompt = `Write a tight 60–90 word editorial blurb for a London restaurant landing page.\nName: ${name}\nCuisine: ${cuisine || 'Restaurant'}\nArea: ${area || 'London'}\nTone: energetic but classy, no fluff, no emojis. Avoid repeating the name more than once.`;
+  const prompt = selectDescriptionPrompt({ name, cuisine, area, slug });
   try {
     const { data } = await limiter.schedule(() =>
       axios.post(
@@ -370,7 +427,12 @@ async function enrichRecord(record) {
     // Optional description (only if empty)
     let description = clean(fields['Description']);
     if (!description) {
-      description = await generateDescription({ name: details.name, cuisine, area: areaGuess });
+      description = await generateDescription({
+        name: details.name,
+        cuisine,
+        area: areaGuess,
+        slug,
+      });
     }
 
     // Step 3: Upsert
@@ -416,10 +478,7 @@ async function enrichRecord(record) {
   }
 }
 
-async function run() {
-  const max = Number(MAX_RECORDS_PER_RUN);
-
-  // Fetch targets: pending or missing Place ID / Photo / Description
+async function fetchPendingBatch(limit) {
   const filter = `OR(
     {Enrichment Status} = 'pending',
     {Enrichment Status} = '',
@@ -429,28 +488,51 @@ async function run() {
     {Description} = BLANK()
   )`;
 
-  const toProcess = [];
+  const collected = [];
   await table
-    .select({ filterByFormula: filter, maxRecords: max })
+    .select({ filterByFormula: filter, maxRecords: limit })
     .eachPage((records, fetchNext) => {
-      toProcess.push(...records);
+      collected.push(...records);
       fetchNext();
     });
 
-  if (!toProcess.length) {
-    console.log('Nothing to enrich. ✅');
-    return;
+  return collected;
+}
+
+async function run() {
+  const maxPerBatch = parseMaxRecords();
+  let totalProcessed = 0;
+  let iteration = 0;
+
+  while (true) {
+    const toProcess = await fetchPendingBatch(maxPerBatch);
+
+    if (!toProcess.length) {
+      if (iteration === 0) {
+        console.log('Nothing to enrich. ✅');
+      } else {
+        console.log('No more records to enrich. ✅');
+      }
+      break;
+    }
+
+    iteration += 1;
+    console.log(`Found ${toProcess.length} record(s) to enrich…`);
+
+    for (const rec of toProcess) {
+      await enrichRecord(rec);
+      totalProcessed += 1;
+      await sleep(Number(SLEEP_MS_BETWEEN_REQUESTS));
+    }
+
+    if (!runAll) {
+      break;
+    }
   }
 
-  console.log(`Found ${toProcess.length} record(s) to enrich…`);
-
-  // Process sequentially but rate-limited (simpler for quotas)
-  for (const rec of toProcess) {
-    await enrichRecord(rec);
-    await sleep(Number(SLEEP_MS_BETWEEN_REQUESTS));
+  if (totalProcessed > 0) {
+    console.log(`Done. ✅ Processed ${totalProcessed} record(s).`);
   }
-
-  console.log('Done. ✅');
 }
 
 run().catch((e) => {

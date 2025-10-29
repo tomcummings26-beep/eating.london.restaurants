@@ -76,6 +76,18 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
    ```
 
    The worker will process up to `MAX_RECORDS_PER_RUN` entries marked as `pending` (or missing Place ID / Photo / Description).
+   Rerun the command to pick up the next batch after the first 50 are marked as enriched. To drain the entire queue in one go,
+   run the backfill script:
+
+   ```bash
+   npm run backfill         # equivalent to `node index.js --all`
+   ```
+
+   You can also override the batch size at runtime without editing `.env`:
+
+   ```bash
+   node index.js --max=100   # process up to 100 records in this invocation
+   ```
 
 5. **Deploy on Railway**
 
@@ -87,7 +99,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
    - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
    - Deploy (Railway will run `npm install` followed by `npm start`).
    - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run start`.
-   - For manual backfills, trigger `npm run once` from the Railway run tab.
+   - For manual backfills, trigger `npm run backfill` from the Railway run tab to walk through every pending record in batches of
+     `MAX_RECORDS_PER_RUN`.
 
 ## Staying in sync with `main`
 

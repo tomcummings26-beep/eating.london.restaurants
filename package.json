@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "NODE_ENV=development node index.js",
-    "once": "node index.js --once"
+    "once": "node index.js --once",
+    "backfill": "node index.js --all"
   },
   "dependencies": {
     "airtable": "^0.12.1",
