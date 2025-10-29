@@ -64,7 +64,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      | Photo Attribution | Long text |
      | Description | Long text |
      | Instagram | URL |
-     | Instagram Status | Single select (`pending` / `found` / `not_found` / `error` / `retry`) |
+    | Instagram Status | Single select (`pending` / `found` / `not_found` / `error` / `retry`). Optional but recommended; without it the worker will tag **Notes** with `[instagram-skip …]` when a crawl fails so those rows stop retrying. |
      | Last Enriched | Date |
      | Enrichment Status | Single select (`pending` / `enriched` / `not_found` / `error`) |
      | Notes | Long text |
@@ -82,7 +82,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     ```
 
    The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and*
-    are still missing a Place ID, photo, description, or Instagram profile. Rows whose **Instagram Status** is `not_found` or `error` are skipped so the worker doesn’t loop forever on websites that block crawlers. To retry one of those rows, clear the Instagram link and set **Instagram Status** to `retry` (or blank) before running the worker again. Records marked as `not_found` in the main enrichment status are ignored; everything else with missing
+    are still missing a Place ID, photo, description, or Instagram profile. Rows whose **Instagram Status** is `not_found` or `error` are skipped so the worker doesn’t loop forever on websites that block crawlers. To retry one of those rows, clear the Instagram link and set **Instagram Status** to `retry` (or blank) before running the worker again. If you choose not to add the Instagram status column, the worker adds a `[instagram-skip …]` note the first time a crawl fails; remove that tag to re-queue the venue. Records marked as `not_found` in the main enrichment status are ignored; everything else with missing
     data is eligible, so you no longer need to toggle a row back to `pending` just to fill in a new Instagram link. The script continues automatically until no matching
     records remain. If you want to stop after a single batch—for example,
      while testing rate limits—run the `once` script instead:

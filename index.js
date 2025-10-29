@@ -113,6 +113,7 @@ const instagramStatusOptions = parseSelectOptions(
 );
 
 let instagramStatusFieldAvailable = true;
+let notesFieldAvailable = true;
 
 const matchSelectOption = (desired, options, fieldName) => {
   if (!desired) return undefined;
@@ -238,12 +239,44 @@ const toSlug = (name) =>
 
 const clean = (s) => (s == null ? '' : String(s).trim());
 
-const stripInstagramStatusField = (input) => {
-  if (instagramStatusFieldAvailable) return input;
+const toNotesString = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  return String(value);
+};
+
+const INSTAGRAM_SKIP_SENTINEL = '[instagram-skip]';
+
+const stripInstagramSkipNote = (notes) => {
+  const raw = toNotesString(notes);
+  if (!raw) return '';
+  const lines = raw.split(/\r?\n/);
+  const filtered = lines.filter((line) => !line.trim().startsWith(INSTAGRAM_SKIP_SENTINEL));
+  return filtered.join('\n').trim();
+};
+
+const appendInstagramSkipNote = (notes, { status, reason } = {}) => {
+  const base = stripInstagramSkipNote(notes);
+  const detailParts = [status, reason]
+    .map((part) => (part ? String(part).trim() : ''))
+    .filter(Boolean);
+  const detail = detailParts.join(' ');
+  const newLine = detail ? `${INSTAGRAM_SKIP_SENTINEL} ${detail}` : INSTAGRAM_SKIP_SENTINEL;
+  return base ? `${base}\n${newLine}` : newLine;
+};
+
+const sanitizeOptionalFieldsForUpdate = (input) => {
   if (!input || typeof input !== 'object') return input;
-  if (!Object.prototype.hasOwnProperty.call(input, 'Instagram Status')) return input;
   const clone = { ...input };
-  delete clone['Instagram Status'];
+
+  if (!instagramStatusFieldAvailable && Object.prototype.hasOwnProperty.call(clone, 'Instagram Status')) {
+    delete clone['Instagram Status'];
+  }
+
+  if (!notesFieldAvailable && Object.prototype.hasOwnProperty.call(clone, 'Notes')) {
+    delete clone['Notes'];
+  }
+
   return clone;
 };
 
@@ -251,7 +284,7 @@ const prepareRecordsForInstagramStatus = (records) =>
   records
     .map((entry) => ({
       ...entry,
-      fields: stripInstagramStatusField(entry.fields)
+      fields: sanitizeOptionalFieldsForUpdate(entry.fields)
     }))
     .filter((entry) => entry.fields && Object.keys(entry.fields).length);
 
@@ -260,6 +293,12 @@ const isMissingInstagramStatusFieldError = (error) =>
   error?.statusCode === 422 &&
   typeof error?.message === 'string' &&
   error.message.toLowerCase().includes('instagram status');
+
+const isMissingNotesFieldError = (error) =>
+  notesFieldAvailable &&
+  error?.statusCode === 422 &&
+  typeof error?.message === 'string' &&
+  error.message.toLowerCase().includes('notes');
 
 const upsertBySlug = async (slug, fields, recordId) => {
   const sanitizedSlug = clean(slug);
@@ -280,6 +319,16 @@ const upsertBySlug = async (slug, fields, recordId) => {
         console.warn(
           '[airtable] Instagram Status field not found; skipping Instagram status updates going forward.'
         );
+        const retried = prepareRecordsForInstagramStatus(records);
+        if (!retried.length) {
+          return [];
+        }
+        return await table[action](retried);
+      }
+
+      if (isMissingNotesFieldError(error)) {
+        notesFieldAvailable = false;
+        console.warn('[airtable] Notes field not found; skipping Instagram retry annotations.');
         const retried = prepareRecordsForInstagramStatus(records);
         if (!retried.length) {
           return [];
@@ -529,6 +578,27 @@ async function enrichRecord(record) {
       ? clean(fields['Instagram Status'])
       : '';
     let instagramStatusToSave;
+    const existingNotesValue = toNotesString(fields['Notes']);
+    let updatedNotesValue = existingNotesValue;
+    let notesChanged = false;
+
+    const clearInstagramSkipNote = () => {
+      if (!notesFieldAvailable) return;
+      const withoutSentinel = stripInstagramSkipNote(updatedNotesValue);
+      if (withoutSentinel !== updatedNotesValue) {
+        updatedNotesValue = withoutSentinel;
+        notesChanged = true;
+      }
+    };
+
+    const recordInstagramSkip = (status, reason) => {
+      if (instagramStatusFieldAvailable || !notesFieldAvailable) return;
+      const nextNotes = appendInstagramSkipNote(updatedNotesValue, { status, reason });
+      if (nextNotes !== updatedNotesValue) {
+        updatedNotesValue = nextNotes;
+        notesChanged = true;
+      }
+    };
 
     const setInstagramStatus = (status) => {
       if (!status || !instagramStatusFieldAvailable) return;
@@ -543,6 +613,7 @@ async function enrichRecord(record) {
         console.log(`[instagram] Normalised ${name}: ${instagram}`);
       }
       setInstagramStatus('found');
+      clearInstagramSkipNote();
     } else {
       const websiteForInstagram = clean(details.website || fields['Website']);
       if (websiteForInstagram) {
@@ -556,13 +627,17 @@ async function enrichRecord(record) {
             console.log(`[instagram] Captured ${instagram} for ${name}`);
           }
           setInstagramStatus('found');
+          clearInstagramSkipNote();
         } else if (lookup.status === 'error') {
           setInstagramStatus('error');
+          recordInstagramSkip('error', lookup.reason || 'lookup_failed');
         } else {
           setInstagramStatus('not_found');
+          recordInstagramSkip('not_found');
         }
       } else {
         setInstagramStatus('not_found');
+        recordInstagramSkip('not_found', 'no_website');
       }
     }
 
@@ -590,6 +665,10 @@ async function enrichRecord(record) {
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
 
+    if (notesChanged) {
+      payload['Notes'] = updatedNotesValue;
+    }
+
     if (instagramStatusFieldAvailable && instagramStatusToSave) {
       payload['Instagram Status'] = instagramStatusToSave;
     }
@@ -614,7 +693,11 @@ async function enrichRecord(record) {
   }
 }
 
-const statusesToReprocess = ['pending', 'error', 'enriched'];
+const baseStatusesToReprocess = ['pending', 'error'];
+const statusesIncludingEnriched = [...baseStatusesToReprocess, 'enriched'];
+
+const getStatusesToReprocess = () =>
+  instagramStatusFieldAvailable ? statusesIncludingEnriched : baseStatusesToReprocess;
 
 const buildStatusFilterFormula = (statuses) => {
   const predicates = statuses.map(
@@ -626,14 +709,19 @@ const buildStatusFilterFormula = (statuses) => {
 };
 
 async function fetchPendingBatch(limit) {
-  const statusFilter = buildStatusFilterFormula(statusesToReprocess);
+  const statusFilter = buildStatusFilterFormula(getStatusesToReprocess());
   const instagramNeedsWork = instagramStatusFieldAvailable
     ? `AND(
     OR({Instagram} = BLANK(), {Instagram} = ''),
     NOT(LOWER({Instagram Status}) = 'not_found'),
     NOT(LOWER({Instagram Status}) = 'error')
   )`
-    : `OR({Instagram} = BLANK(), {Instagram} = '')`;
+    : notesFieldAvailable
+      ? `AND(
+    OR({Instagram} = BLANK(), {Instagram} = ''),
+    NOT(FIND('${INSTAGRAM_SKIP_SENTINEL}', {Notes} & ''))
+  )`
+      : 'FALSE()';
 
   const filter = `AND(
     ${statusFilter},
@@ -667,6 +755,19 @@ async function fetchPendingBatch(limit) {
       console.warn(
         '[airtable] Instagram Status field not found; skipping Instagram status filtering and updates.'
       );
+      return fetchPendingBatch(limit);
+    }
+
+    const missingNotesField =
+      notesFieldAvailable &&
+      err?.statusCode === 422 &&
+      err?.error === 'INVALID_FILTER_BY_FORMULA' &&
+      typeof err?.message === 'string' &&
+      err.message.toLowerCase().includes('notes');
+
+    if (missingNotesField) {
+      notesFieldAvailable = false;
+      console.warn('[airtable] Notes field not found; skipping Instagram retry annotations.');
       return fetchPendingBatch(limit);
     }
 
