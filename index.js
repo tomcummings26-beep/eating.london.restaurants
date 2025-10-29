@@ -214,18 +214,36 @@ const toSlug = (name) =>
 
 const clean = (s) => (s == null ? '' : String(s).trim());
 
-const upsertBySlug = async (slug, fields) => {
-  // Find existing
-  const query = `Slug = "${slug.replace(/"/g, '\\"')}"`;
+const upsertBySlug = async (slug, fields, recordId) => {
+  const sanitizedSlug = clean(slug);
+  const payload = { ...fields };
+
+  if (sanitizedSlug) {
+    payload['Slug'] = sanitizedSlug;
+  }
+
+  if (recordId) {
+    await table.update([{ id: recordId, fields: payload }]);
+    return recordId;
+  }
+
+  if (!sanitizedSlug) {
+    const createdWithoutSlug = await table.create([{ fields: payload }]);
+    return createdWithoutSlug[0].id;
+  }
+
+  // Find existing by slug when no recordId was provided (e.g. legacy callers)
+  const query = `Slug = "${sanitizedSlug.replace(/"/g, '\\"')}"`;
   const found = await table
     .select({ filterByFormula: query, maxRecords: 1 })
     .firstPage();
   if (found.length) {
     const id = found[0].id;
-    await table.update([{ id, fields }]);
+    await table.update([{ id, fields: payload }]);
     return id;
   }
-  const created = await table.create([{ fields: { Slug: slug, ...fields } }]);
+
+  const created = await table.create([{ fields: payload }]);
   return created[0].id;
 };
 
@@ -372,7 +390,7 @@ async function enrichRecord(record) {
           'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
         };
         if (status) update['Enrichment Status'] = status;
-        await upsertBySlug(slug, update);
+        await upsertBySlug(slug, update, record.id);
         console.log(`Not found: ${name}`);
         return;
       }
@@ -388,7 +406,7 @@ async function enrichRecord(record) {
         'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
       };
       if (status) update['Enrichment Status'] = status;
-      await upsertBySlug(slug, update);
+      await upsertBySlug(slug, update, record.id);
       console.log(`No details: ${name}`);
       return;
     }
@@ -463,7 +481,7 @@ async function enrichRecord(record) {
     const enrichedStatus = pickEnrichmentStatus('enriched');
     if (enrichedStatus) payload['Enrichment Status'] = enrichedStatus;
 
-    await upsertBySlug(slug, payload);
+    await upsertBySlug(slug, payload, record.id);
     console.log(`Enriched: ${name} (${slug})`);
   } catch (err) {
     if (isAirtableNotFound(err)) {
@@ -476,7 +494,7 @@ async function enrichRecord(record) {
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
     if (status) fallbackFields['Enrichment Status'] = status;
-    await upsertBySlug(toSlug(fields['Slug'] || fields['Name'] || ''), fallbackFields);
+    await upsertBySlug(slug, fallbackFields, record.id);
   }
 }
 
