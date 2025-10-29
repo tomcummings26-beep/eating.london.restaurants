@@ -80,9 +80,9 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     npm start
     ```
 
-   The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
-    are still missing a Place ID, photo, description, or Instagram profile. Records marked as `enriched` or `not_found` are ignored even if they
-    have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
+   The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and*
+    are still missing a Place ID, photo, description, or Instagram profile. Records marked as `not_found` are ignored; everything else with missing
+    data is eligible, so you no longer need to toggle a row back to `pending` just to fill in a new Instagram link. The script continues automatically until no matching
     records remain. If you want to stop after a single batch—for example,
      while testing rate limits—run the `once` script instead:
 
@@ -108,7 +108,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     npm run instagram
     ```
 
-    Walks the entire table, fetches each restaurant website, and looks for a canonical Instagram profile link. Only rows with
+    Walks the entire table, fetches each restaurant website, and looks for a canonical Instagram profile link (regardless of `Enrichment Status`). Only rows with
     an empty `Instagram` column are updated by default—pass `--force` (via `npm run instagram:force`) to re-check every row even
     if it already contains a value. The script honours `INSTAGRAM_CONCURRENCY` and `INSTAGRAM_REQUEST_INTERVAL_MS` to control
     crawl pacing.

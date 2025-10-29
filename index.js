@@ -514,7 +514,7 @@ async function enrichRecord(record) {
   }
 }
 
-const statusesToReprocess = ['pending', 'error'];
+const statusesToReprocess = ['pending', 'error', 'enriched'];
 
 const buildStatusFilterFormula = (statuses) => {
   const predicates = statuses.map(
