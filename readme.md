@@ -75,33 +75,39 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 
 4. **Run locally**
 
-  - **Worker:**
+  - **JSON feed server (default):**
 
     ```bash
     npm start
+    # or
+    npm run serve
     ```
 
-   The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and*
-    are still missing a Place ID, photo, description, or Instagram profile. Rows whose **Instagram Status** is `not_found` or `error` are skipped so the worker doesn’t loop forever on websites that block crawlers. To retry one of those rows, clear the Instagram link and set **Instagram Status** to `retry` (or blank) before running the worker again. If you choose not to add the Instagram status column, the worker adds a `[instagram-skip …]` note the first time a crawl fails; remove that tag to re-queue the venue. Records marked as `not_found` in the main enrichment status are ignored; everything else with missing
-    data is eligible, so you no longer need to toggle a row back to `pending` just to fill in a new Instagram link. The script continues automatically until no matching
-    records remain. If you want to stop after a single batch—for example,
-     while testing rate limits—run the `once` script instead:
+    This launches the Express server that exposes `/restaurants`. Override `PORT` or `RESTAURANTS_CACHE_TTL_MS` in your env as needed.
 
-     ```bash
-     npm run once             # equivalent to `node index.js --once`
-     ```
+  - **Worker:**
 
-     To explicitly loop forever (useful if you set a very small `MAX_RECORDS_PER_RUN`), you can still run the backfill helper:
+    ```bash
+    npm run worker
+    ```
 
-     ```bash
-     npm run backfill         # equivalent to `node index.js --all`
-     ```
+    The worker processes up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and* are still missing a Place ID, photo, description (only when OpenAI descriptions are enabled), or Instagram profile. Rows whose **Instagram Status** is `not_found` or `error` are skipped so the worker doesn’t loop forever on websites that block crawlers. To retry one of those rows, clear the Instagram link and set **Instagram Status** to `retry` (or blank) before running the worker again. If you choose not to add the Instagram status column, the worker adds a `[instagram-skip …]` note the first time a crawl fails; remove that tag to re-queue the venue. Records marked as `not_found` in the main enrichment status are ignored; everything else with missing data is eligible, so you no longer need to toggle a row back to `pending` just to fill in a new Instagram link. The script continues automatically until no matching records remain. If you want to stop after a single batch—for example, while testing rate limits—run the `once` script instead:
 
-     You can also override the batch size at runtime without editing `.env`:
+    ```bash
+    npm run once             # equivalent to `node index.js --once`
+    ```
 
-     ```bash
-     node index.js --max=100   # process up to 100 records in this invocation
-     ```
+    To explicitly loop forever (useful if you set a very small `MAX_RECORDS_PER_RUN`), you can still run the backfill helper:
+
+    ```bash
+    npm run backfill         # equivalent to `node index.js --all`
+    ```
+
+    You can also override the batch size at runtime without editing `.env`:
+
+    ```bash
+    node index.js --max=100   # process up to 100 records in this invocation
+    ```
 
   - **Instagram backfill (optional):**
 
@@ -117,14 +123,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 
   - **JSON feed server:**
 
-     ```bash
-     npm run serve
-     # or
-     START_MODE=server npm start
-     ```
-
-     This launches an Express server that exposes `GET /restaurants`, returning a cached JSON payload of the Airtable table. The server honours
-     `RESTAURANTS_CACHE_TTL_MS` (defaults to five minutes) to avoid hammering Airtable on every request.
+    See the default server instructions above. The Express API honours
+    `RESTAURANTS_CACHE_TTL_MS` (defaults to five minutes) to avoid hammering Airtable on every request.
 
 5. **Deploy on Railway**
 
@@ -134,8 +134,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      - Or use the CLI: `railway variables set AIRTABLE_API_KEY=...` (repeat for each variable).
      - Verify they are available with `railway variables` or `railway run node -e "console.log(process.env.AIRTABLE_API_KEY)"`.
    - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
-   - Deploy (Railway will run `npm install` followed by `npm start`; by default this executes the worker. Set `START_MODE=server` in Railway Variables or change the start command to `npm run serve` if you want the JSON feed service to be the primary process).
-   - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm start` or `npm run worker` (both run the worker).
+   - Deploy (Railway will run `npm install` followed by `npm start`; by default this now launches the JSON feed server. Set `START_MODE=worker` in Railway Variables or change the start command to `npm run worker` if you want the enrichment worker to be the primary process in that service).
+   - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run worker` (or `npm run worker:once`) so enrichment jobs execute separately from the feed server.
    - For manual backfills, trigger `npm run backfill` from the Railway run tab to walk through every pending record in batches of
      `MAX_RECORDS_PER_RUN`.
 

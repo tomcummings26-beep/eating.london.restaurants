@@ -1,7 +1,17 @@
-const mode = (process.env.START_MODE || process.env.RUN_MODE || '').toLowerCase();
+const rawMode = (process.env.START_MODE || process.env.RUN_MODE || '').trim().toLowerCase();
 
-if (mode === 'server' || mode === 'serve' || mode === 'web') {
+const mode = rawMode || 'server';
+
+const isWorkerMode = ['worker', 'workers', 'job', 'queue', 'cron', 'enrich', 'enricher'].includes(mode);
+const isServerMode = ['server', 'serve', 'web', 'api'].includes(mode);
+
+if (isWorkerMode) {
+  await import('./index.js');
+} else if (isServerMode || mode === 'server') {
+  await import('./server.js');
+} else if (!rawMode) {
   await import('./server.js');
 } else {
-  await import('./index.js');
+  console.warn(`Unknown START_MODE "${rawMode}" – defaulting to server.`);
+  await import('./server.js');
 }

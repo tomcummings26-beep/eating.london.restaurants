@@ -38,6 +38,8 @@ const {
   AIRTABLE_INSTAGRAM_STATUS_OPTIONS
 } = process.env;
 
+const OPENAI_ENABLED = Boolean(OPENAI_API_KEY);
+
 const cliArgs = process.argv.slice(2);
 const maxOverrideArg = cliArgs.find((arg) => arg.startsWith('--max='));
 const runOnceFlag = cliArgs.includes('--once');
@@ -723,13 +725,27 @@ async function fetchPendingBatch(limit) {
   )`
       : 'FALSE()';
 
+  const descriptionNeedsWork = OPENAI_ENABLED
+    ? `OR({Description} = BLANK(), {Description} = '')`
+    : null;
+
+  const recheckPredicates = [
+    '{Place ID} = BLANK()',
+    '{Photo URL} = BLANK()'
+  ];
+
+  if (descriptionNeedsWork) {
+    recheckPredicates.push(descriptionNeedsWork);
+  }
+
+  if (instagramNeedsWork && instagramNeedsWork !== 'FALSE()') {
+    recheckPredicates.push(instagramNeedsWork);
+  }
+
   const filter = `AND(
     ${statusFilter},
     OR(
-      {Place ID} = BLANK(),
-      {Photo URL} = BLANK(),
-      {Description} = BLANK(),
-      ${instagramNeedsWork}
+      ${recheckPredicates.join(',\n      ')}
     )
   )`;
 
