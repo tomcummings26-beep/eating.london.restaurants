@@ -9,6 +9,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 - Optional OpenAI-powered description blurb generation
 - Rate limiting to protect Google and Airtable quotas
 - Configurable concurrency and batch limits via environment variables
+- JSON feed endpoint (`/restaurants`) for Framer or other consumers
 
 ## Getting Started
 
@@ -71,31 +72,44 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 
 4. **Run locally**
 
-   ```bash
-   npm run start
-   ```
+   - **Worker:**
 
-  The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
-  are still missing a Place ID, photo, or description. Records marked as `enriched` or `not_found` are ignored even if they
-  have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
-  records remain. If you want to stop after a single batch—for example,
-  while testing rate limits—run the `once` script instead:
+     ```bash
+     npm run worker
+     ```
 
-  ```bash
-  npm run once             # equivalent to `node index.js --once`
-  ```
+     The worker will process up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, or blank *and*
+     are still missing a Place ID, photo, or description. Records marked as `enriched` or `not_found` are ignored even if they
+     have empty fields—set the status back to `pending` to re-queue them. The script continues automatically until no matching
+     records remain. If you want to stop after a single batch—for example,
+     while testing rate limits—run the `once` script instead:
 
-  To explicitly loop forever (useful if you set a very small `MAX_RECORDS_PER_RUN`), you can still run the backfill helper:
+     ```bash
+     npm run once             # equivalent to `node index.js --once`
+     ```
 
-  ```bash
-  npm run backfill         # equivalent to `node index.js --all`
-  ```
+     To explicitly loop forever (useful if you set a very small `MAX_RECORDS_PER_RUN`), you can still run the backfill helper:
 
-  You can also override the batch size at runtime without editing `.env`:
+     ```bash
+     npm run backfill         # equivalent to `node index.js --all`
+     ```
 
-   ```bash
-   node index.js --max=100   # process up to 100 records in this invocation
-   ```
+     You can also override the batch size at runtime without editing `.env`:
+
+     ```bash
+     node index.js --max=100   # process up to 100 records in this invocation
+     ```
+
+   - **JSON feed server:**
+
+     ```bash
+     npm start
+     # or
+     npm run serve
+     ```
+
+     This launches an Express server that exposes `GET /restaurants`, returning a cached JSON payload of the Airtable table. The server honours
+     `RESTAURANTS_CACHE_TTL_MS` (defaults to five minutes) to avoid hammering Airtable on every request.
 
 5. **Deploy on Railway**
 
@@ -105,10 +119,21 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      - Or use the CLI: `railway variables set AIRTABLE_API_KEY=...` (repeat for each variable).
      - Verify they are available with `railway variables` or `railway run node -e "console.log(process.env.AIRTABLE_API_KEY)"`.
    - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
-   - Deploy (Railway will run `npm install` followed by `npm start`).
-   - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run start`.
+   - Deploy (Railway will run `npm install` followed by `npm start`, which launches the JSON feed server).
+   - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run worker`.
    - For manual backfills, trigger `npm run backfill` from the Railway run tab to walk through every pending record in batches of
      `MAX_RECORDS_PER_RUN`.
+
+## JSON feed
+
+The Express server mounted by `npm start` exposes the following endpoints:
+
+- `GET /` – lightweight status payload listing available routes.
+- `GET /restaurants` – returns `{ generatedAt, count, restaurants }` where `restaurants` is an array of normalised restaurant records.
+
+The handler caches Airtable responses in-memory for `RESTAURANTS_CACHE_TTL_MS` milliseconds (default: `300000`, i.e. 5 minutes). Append
+`?refresh=true` to bypass the cache on-demand. Responses include permissive CORS headers so Framer or other frontend environments can fetch
+the JSON directly from Railway.
 
 ## Staying in sync with `main`
 
