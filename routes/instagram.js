@@ -54,6 +54,24 @@ const mapPosts = (edges) =>
     comments: edge?.node?.edge_media_to_comment?.count || 0
   }));
 
+const extractEdgesFromNextData = (payload) => {
+  if (!payload) return [];
+
+  const candidateSets = [
+    payload?.props?.pageProps?.graphql?.user?.edge_owner_to_timeline_media?.edges,
+    payload?.props?.pageProps?.profilePosts?.edges,
+    payload?.props?.pageProps?.timeline?.edges
+  ];
+
+  for (const edges of candidateSets) {
+    if (Array.isArray(edges) && edges.length) {
+      return edges;
+    }
+  }
+
+  return [];
+};
+
 async function tryJsonEndpoints(username) {
   for (const builder of JSON_ENDPOINTS) {
     const url = builder(username);
@@ -153,6 +171,21 @@ async function fetchFromHtml(username) {
       }
     } catch (err) {
       // ignore parse error and continue
+    }
+  }
+
+  const nextDataMatch = html.match(
+    /<script type="application\/json" id="__NEXT_DATA__">(.*?)<\/script>/s
+  );
+  if (nextDataMatch) {
+    try {
+      const payload = JSON.parse(nextDataMatch[1]);
+      const edges = extractEdgesFromNextData(payload);
+      if (edges?.length) {
+        return { edges, from: `${source}#__NEXT_DATA__` };
+      }
+    } catch (err) {
+      // ignore malformed NEXT_DATA payloads and continue
     }
   }
 
