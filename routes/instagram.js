@@ -35,12 +35,65 @@ const htmlHeaders = (username) => ({
   Referer: `https://www.instagram.com/${username}/`
 });
 
+const isMediaEdgeArray = (value) =>
+  Array.isArray(value) && value.some((edge) => edge?.node?.shortcode);
+
+const findEdgesDeep = (payload) => {
+  const stack = [payload];
+  const visited = new Set();
+
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== 'object') {
+      continue;
+    }
+    if (visited.has(current)) {
+      continue;
+    }
+    visited.add(current);
+
+    if (Array.isArray(current)) {
+      if (isMediaEdgeArray(current)) {
+        return current;
+      }
+      for (const item of current) {
+        if (item && typeof item === 'object') {
+          stack.push(item);
+        }
+      }
+      continue;
+    }
+
+    const timeline = current.edge_owner_to_timeline_media;
+    if (timeline?.edges && isMediaEdgeArray(timeline.edges)) {
+      return timeline.edges;
+    }
+
+    if (current.edges && isMediaEdgeArray(current.edges)) {
+      return current.edges;
+    }
+
+    for (const key of Object.keys(current)) {
+      const value = current[key];
+      if (value && typeof value === 'object') {
+        stack.push(value);
+      }
+    }
+  }
+
+  return [];
+};
+
 const normaliseEdges = (payload) => {
-  return (
+  const directEdges =
     payload?.graphql?.user?.edge_owner_to_timeline_media?.edges ||
-    payload?.data?.user?.edge_owner_to_timeline_media?.edges ||
-    []
-  );
+    payload?.data?.user?.edge_owner_to_timeline_media?.edges;
+
+  if (isMediaEdgeArray(directEdges)) {
+    return directEdges;
+  }
+
+  return findEdgesDeep(payload);
 };
 
 const mapPosts = (edges) =>
@@ -67,6 +120,11 @@ const extractEdgesFromNextData = (payload) => {
     if (Array.isArray(edges) && edges.length) {
       return edges;
     }
+  }
+
+  const deepEdges = findEdgesDeep(payload);
+  if (deepEdges.length) {
+    return deepEdges;
   }
 
   return [];
