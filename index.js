@@ -3,7 +3,14 @@ import Airtable from 'airtable';
 import axios from 'axios';
 import Bottleneck from 'bottleneck';
 import slugify from 'slugify';
-import { findInstagramProfile, normalizeInstagramProfileUrl } from './lib/instagram.js';
+
+import {
+  findInstagramProfile,
+  addInstagramSkipNote,
+  removeInstagramSkipNote,
+  hasInstagramSkipNote,
+  INSTAGRAM_SKIP_SENTINEL
+} from './lib/instagram.js';
 
 // In production (Railway) configuration must come from environment variables.
 // For local development we still allow a .env file.
@@ -34,8 +41,7 @@ const {
   CONCURRENCY = '2',
   SLEEP_MS_BETWEEN_REQUESTS = '250',
   OPENAI_API_KEY,
-  AIRTABLE_ENRICHMENT_STATUS_OPTIONS,
-  AIRTABLE_INSTAGRAM_STATUS_OPTIONS
+  AIRTABLE_ENRICHMENT_STATUS_OPTIONS
 } = process.env;
 
 const OPENAI_ENABLED = Boolean(OPENAI_API_KEY);
@@ -109,12 +115,6 @@ const enrichmentStatusOptions = parseSelectOptions(
   ['pending', 'enriched', 'not_found', 'error']
 );
 
-const instagramStatusOptions = parseSelectOptions(
-  AIRTABLE_INSTAGRAM_STATUS_OPTIONS,
-  ['pending', 'found', 'not_found', 'error', 'retry']
-);
-
-let instagramStatusFieldAvailable = true;
 let notesFieldAvailable = true;
 
 const matchSelectOption = (desired, options, fieldName) => {
@@ -139,21 +139,6 @@ const pickEnrichmentStatus = (status, fallback) => {
       fallback,
       enrichmentStatusOptions,
       'Enrichment Status'
-    );
-    if (fallbackMatched !== undefined) return fallbackMatched;
-  }
-  return undefined;
-};
-
-const pickInstagramStatus = (status, fallback) => {
-  if (!instagramStatusFieldAvailable) return undefined;
-  const matched = matchSelectOption(status, instagramStatusOptions, 'Instagram Status');
-  if (matched !== undefined) return matched;
-  if (fallback) {
-    const fallbackMatched = matchSelectOption(
-      fallback,
-      instagramStatusOptions,
-      'Instagram Status'
     );
     if (fallbackMatched !== undefined) return fallbackMatched;
   }
@@ -241,60 +226,19 @@ const toSlug = (name) =>
 
 const clean = (s) => (s == null ? '' : String(s).trim());
 
-const toNotesString = (value) => {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  return String(value);
+const ensureNewlineSeparated = (value) => {
+  if (!value) return '';
+  return String(value)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n');
 };
 
-const INSTAGRAM_SKIP_SENTINEL = '[instagram-skip]';
-
-const stripInstagramSkipNote = (notes) => {
-  const raw = toNotesString(notes);
-  if (!raw) return '';
-  const lines = raw.split(/\r?\n/);
-  const filtered = lines.filter((line) => !line.trim().startsWith(INSTAGRAM_SKIP_SENTINEL));
-  return filtered.join('\n').trim();
+const normalizeNotes = (value) => {
+  if (!value) return '';
+  return ensureNewlineSeparated(value);
 };
-
-const appendInstagramSkipNote = (notes, { status, reason } = {}) => {
-  const base = stripInstagramSkipNote(notes);
-  const detailParts = [status, reason]
-    .map((part) => (part ? String(part).trim() : ''))
-    .filter(Boolean);
-  const detail = detailParts.join(' ');
-  const newLine = detail ? `${INSTAGRAM_SKIP_SENTINEL} ${detail}` : INSTAGRAM_SKIP_SENTINEL;
-  return base ? `${base}\n${newLine}` : newLine;
-};
-
-const sanitizeOptionalFieldsForUpdate = (input) => {
-  if (!input || typeof input !== 'object') return input;
-  const clone = { ...input };
-
-  if (!instagramStatusFieldAvailable && Object.prototype.hasOwnProperty.call(clone, 'Instagram Status')) {
-    delete clone['Instagram Status'];
-  }
-
-  if (!notesFieldAvailable && Object.prototype.hasOwnProperty.call(clone, 'Notes')) {
-    delete clone['Notes'];
-  }
-
-  return clone;
-};
-
-const prepareRecordsForInstagramStatus = (records) =>
-  records
-    .map((entry) => ({
-      ...entry,
-      fields: sanitizeOptionalFieldsForUpdate(entry.fields)
-    }))
-    .filter((entry) => entry.fields && Object.keys(entry.fields).length);
-
-const isMissingInstagramStatusFieldError = (error) =>
-  instagramStatusFieldAvailable &&
-  error?.statusCode === 422 &&
-  typeof error?.message === 'string' &&
-  error.message.toLowerCase().includes('instagram status');
 
 const isMissingNotesFieldError = (error) =>
   notesFieldAvailable &&
@@ -302,68 +246,69 @@ const isMissingNotesFieldError = (error) =>
   typeof error?.message === 'string' &&
   error.message.toLowerCase().includes('notes');
 
+const sanitizeOptionalFields = (fields) => {
+  if (!notesFieldAvailable && Object.prototype.hasOwnProperty.call(fields, 'Notes')) {
+    const clone = { ...fields };
+    delete clone['Notes'];
+    return clone;
+  }
+  return fields;
+};
+
+const performTableAction = async (action, records) => {
+  if (!Array.isArray(records) || !records.length) return [];
+  const prepared = records.map((entry) => ({
+    ...entry,
+    fields: sanitizeOptionalFields(entry.fields || {})
+  }));
+
+  try {
+    return await table[action](prepared);
+  } catch (error) {
+    if (isMissingNotesFieldError(error)) {
+      notesFieldAvailable = false;
+      console.warn('[airtable] Notes field not found; retrying without Notes updates.');
+      const retried = prepared.map((entry) => {
+        if (!Object.prototype.hasOwnProperty.call(entry.fields, 'Notes')) {
+          return entry;
+        }
+        const cloneFields = { ...entry.fields };
+        delete cloneFields['Notes'];
+        return { ...entry, fields: cloneFields };
+      });
+      if (!retried.length) return [];
+      return await table[action](retried);
+    }
+    throw error;
+  }
+};
+
 const upsertBySlug = async (slug, fields, recordId) => {
   const sanitizedSlug = clean(slug);
-  const payload = { ...fields };
-
+  let payload = { ...fields };
   if (sanitizedSlug) {
     payload['Slug'] = sanitizedSlug;
   }
 
-  const executeUpdate = async (records, action) => {
-    const prepared = prepareRecordsForInstagramStatus(records);
-    if (!prepared.length) return [];
-    try {
-      return await table[action](prepared);
-    } catch (error) {
-      if (isMissingInstagramStatusFieldError(error)) {
-        instagramStatusFieldAvailable = false;
-        console.warn(
-          '[airtable] Instagram Status field not found; skipping Instagram status updates going forward.'
-        );
-        const retried = prepareRecordsForInstagramStatus(records);
-        if (!retried.length) {
-          return [];
-        }
-        return await table[action](retried);
-      }
-
-      if (isMissingNotesFieldError(error)) {
-        notesFieldAvailable = false;
-        console.warn('[airtable] Notes field not found; skipping Instagram retry annotations.');
-        const retried = prepareRecordsForInstagramStatus(records);
-        if (!retried.length) {
-          return [];
-        }
-        return await table[action](retried);
-      }
-      throw error;
-    }
-  };
-
   if (recordId) {
-    await executeUpdate([{ id: recordId, fields: payload }], 'update');
+    await performTableAction('update', [{ id: recordId, fields: payload }]);
     return recordId;
   }
 
-  if (!sanitizedSlug) {
-    const createdWithoutSlug = await executeUpdate([{ fields: payload }], 'create');
-    return createdWithoutSlug[0].id;
+  if (sanitizedSlug) {
+    const query = `Slug = "${sanitizedSlug.replace(/"/g, '\\"')}"`;
+    const found = await table
+      .select({ filterByFormula: query, maxRecords: 1 })
+      .firstPage();
+    if (found.length) {
+      const id = found[0].id;
+      await performTableAction('update', [{ id, fields: payload }]);
+      return id;
+    }
   }
 
-  // Find existing by slug when no recordId was provided (e.g. legacy callers)
-  const query = `Slug = "${sanitizedSlug.replace(/"/g, '\\"')}"`;
-  const found = await table
-    .select({ filterByFormula: query, maxRecords: 1 })
-    .firstPage();
-  if (found.length) {
-    const id = found[0].id;
-    await executeUpdate([{ id, fields: payload }], 'update');
-    return id;
-  }
-
-  const created = await executeUpdate([{ fields: payload }], 'create');
-  return created[0].id;
+  const created = await performTableAction('create', [{ fields: payload }]);
+  return created[0]?.id;
 };
 
 // ---------- Google Places ----------
@@ -574,72 +519,48 @@ async function enrichRecord(record) {
       });
     }
 
-    const existingInstagramRaw = clean(fields['Instagram']);
-    let instagram = normalizeInstagramProfileUrl(existingInstagramRaw);
-    const existingInstagramStatus = instagramStatusFieldAvailable
-      ? clean(fields['Instagram Status'])
-      : '';
-    let instagramStatusToSave;
-    const existingNotesValue = toNotesString(fields['Notes']);
-    let updatedNotesValue = existingNotesValue;
+    const storedWebsite = clean(fields['Website']);
+    const googleWebsite = clean(details.website);
+    const websiteForInstagram = googleWebsite || storedWebsite || '';
+    const existingInstagram = clean(fields['Instagram']);
+    let instagramUrl = existingInstagram;
+    let notesForUpdate = normalizeNotes(fields['Notes']);
     let notesChanged = false;
 
-    const clearInstagramSkipNote = () => {
-      if (!notesFieldAvailable) return;
-      const withoutSentinel = stripInstagramSkipNote(updatedNotesValue);
-      if (withoutSentinel !== updatedNotesValue) {
-        updatedNotesValue = withoutSentinel;
+    const setNotes = (next) => {
+      if (next !== notesForUpdate) {
+        notesForUpdate = next;
         notesChanged = true;
       }
     };
 
-    const recordInstagramSkip = (status, reason) => {
-      if (instagramStatusFieldAvailable || !notesFieldAvailable) return;
-      const nextNotes = appendInstagramSkipNote(updatedNotesValue, { status, reason });
-      if (nextNotes !== updatedNotesValue) {
-        updatedNotesValue = nextNotes;
-        notesChanged = true;
-      }
-    };
+    if (existingInstagram && hasInstagramSkipNote(notesForUpdate)) {
+      setNotes(removeInstagramSkipNote(notesForUpdate));
+    }
 
-    const setInstagramStatus = (status) => {
-      if (!status || !instagramStatusFieldAvailable) return;
-      const matched = pickInstagramStatus(status, existingInstagramStatus);
-      if (matched) {
-        instagramStatusToSave = matched;
-      }
-    };
+    if (
+      !instagramUrl &&
+      hasInstagramSkipNote(notesForUpdate) &&
+      googleWebsite &&
+      googleWebsite !== storedWebsite
+    ) {
+      setNotes(removeInstagramSkipNote(notesForUpdate));
+    }
 
-    if (instagram) {
-      if (instagram !== existingInstagramRaw && existingInstagramRaw) {
-        console.log(`[instagram] Normalised ${name}: ${instagram}`);
-      }
-      setInstagramStatus('found');
-      clearInstagramSkipNote();
-    } else {
-      const websiteForInstagram = clean(details.website || fields['Website']);
-      if (websiteForInstagram) {
-        const lookup = await findInstagramProfile(websiteForInstagram, {
-          scheduler: (task) => limiter.schedule(task),
-          logger: console
-        });
-        instagram = lookup.url;
-        if (instagram) {
-          if (!fields['Instagram']) {
-            console.log(`[instagram] Captured ${instagram} for ${name}`);
-          }
-          setInstagramStatus('found');
-          clearInstagramSkipNote();
-        } else if (lookup.status === 'error') {
-          setInstagramStatus('error');
-          recordInstagramSkip('error', lookup.reason || 'lookup_failed');
-        } else {
-          setInstagramStatus('not_found');
-          recordInstagramSkip('not_found');
+    if (!instagramUrl && websiteForInstagram && !hasInstagramSkipNote(notesForUpdate)) {
+      const igResult = await findInstagramProfile(websiteForInstagram, { limiter });
+      if (igResult?.url) {
+        instagramUrl = igResult.url;
+        setNotes(removeInstagramSkipNote(notesForUpdate));
+        console.log(`  ↳ Instagram: ${instagramUrl}`);
+      } else if (igResult?.error) {
+        if (igResult.message) {
+          console.log(`  ↳ Instagram lookup skipped: ${igResult.message}`);
         }
-      } else {
-        setInstagramStatus('not_found');
-        recordInstagramSkip('not_found', 'no_website');
+        if (notesFieldAvailable) {
+          const reason = igResult.message || 'Instagram profile not found.';
+          setNotes(addInstagramSkipNote(notesForUpdate, reason));
+        }
       }
     }
 
@@ -663,16 +584,15 @@ async function enrichRecord(record) {
       'Photo URL': photoUrl || fields['Photo URL'] || '',
       'Photo Attribution': photoAttr || fields['Photo Attribution'] || '',
       'Description': description || fields['Description'] || '',
-      'Instagram': instagram || '',
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
 
-    if (notesChanged) {
-      payload['Notes'] = updatedNotesValue;
+    if (instagramUrl && instagramUrl !== existingInstagram) {
+      payload['Instagram'] = instagramUrl;
     }
 
-    if (instagramStatusFieldAvailable && instagramStatusToSave) {
-      payload['Instagram Status'] = instagramStatusToSave;
+    if (notesChanged && notesFieldAvailable) {
+      payload['Notes'] = ensureNewlineSeparated(notesForUpdate);
     }
 
     const enrichedStatus = pickEnrichmentStatus('enriched');
@@ -695,11 +615,7 @@ async function enrichRecord(record) {
   }
 }
 
-const baseStatusesToReprocess = ['pending', 'error'];
-const statusesIncludingEnriched = [...baseStatusesToReprocess, 'enriched'];
-
-const getStatusesToReprocess = () =>
-  instagramStatusFieldAvailable ? statusesIncludingEnriched : baseStatusesToReprocess;
+const statusesToReprocess = ['pending', 'error', 'enriched'];
 
 const buildStatusFilterFormula = (statuses) => {
   const predicates = statuses.map(
@@ -711,20 +627,7 @@ const buildStatusFilterFormula = (statuses) => {
 };
 
 async function fetchPendingBatch(limit) {
-  const statusFilter = buildStatusFilterFormula(getStatusesToReprocess());
-  const instagramNeedsWork = instagramStatusFieldAvailable
-    ? `AND(
-    OR({Instagram} = BLANK(), {Instagram} = ''),
-    NOT(LOWER({Instagram Status}) = 'not_found'),
-    NOT(LOWER({Instagram Status}) = 'error')
-  )`
-    : notesFieldAvailable
-      ? `AND(
-    OR({Instagram} = BLANK(), {Instagram} = ''),
-    NOT(FIND('${INSTAGRAM_SKIP_SENTINEL}', {Notes} & ''))
-  )`
-      : 'FALSE()';
-
+  const statusFilter = buildStatusFilterFormula(statusesToReprocess);
   const descriptionNeedsWork = OPENAI_ENABLED
     ? `OR({Description} = BLANK(), {Description} = '')`
     : null;
@@ -734,12 +637,19 @@ async function fetchPendingBatch(limit) {
     '{Photo URL} = BLANK()'
   ];
 
+  if (notesFieldAvailable) {
+    recheckPredicates.push(
+      `AND({Instagram} = BLANK(), FIND('${INSTAGRAM_SKIP_SENTINEL}', {Notes} & '') = 0)`
+    );
+  } else {
+    recheckPredicates.push('{Instagram} = BLANK()');
+  }
+
   if (descriptionNeedsWork) {
     recheckPredicates.push(descriptionNeedsWork);
   }
-
-  if (instagramNeedsWork && instagramNeedsWork !== 'FALSE()') {
-    recheckPredicates.push(instagramNeedsWork);
+  if (!recheckPredicates.length) {
+    recheckPredicates.push('TRUE()');
   }
 
   const filter = `AND(
@@ -759,21 +669,6 @@ async function fetchPendingBatch(limit) {
         fetchNext();
       });
   } catch (err) {
-    const missingInstagramStatusField =
-      instagramStatusFieldAvailable &&
-      err?.statusCode === 422 &&
-      err?.error === 'INVALID_FILTER_BY_FORMULA' &&
-      typeof err?.message === 'string' &&
-      err.message.toLowerCase().includes('instagram status');
-
-    if (missingInstagramStatusField) {
-      instagramStatusFieldAvailable = false;
-      console.warn(
-        '[airtable] Instagram Status field not found; skipping Instagram status filtering and updates.'
-      );
-      return fetchPendingBatch(limit);
-    }
-
     const missingNotesField =
       notesFieldAvailable &&
       err?.statusCode === 422 &&
@@ -783,7 +678,7 @@ async function fetchPendingBatch(limit) {
 
     if (missingNotesField) {
       notesFieldAvailable = false;
-      console.warn('[airtable] Notes field not found; skipping Instagram retry annotations.');
+      console.warn('[airtable] Notes field not found; retrying without Notes filter conditions.');
       return fetchPendingBatch(limit);
     }
 

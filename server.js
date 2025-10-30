@@ -4,7 +4,6 @@ import express from 'express';
 import cors from 'cors';
 
 import createRestaurantsRouter from './routes/restaurants.js';
-import instagramRouter from './routes/instagram.js';
 
 const isRailway = Boolean(
   process.env.RAILWAY_STATIC_URL ||
@@ -47,13 +46,12 @@ app.use(cors({ origin: '*', maxAge: Math.floor(ttlMs / 1000) }));
 app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
-    endpoints: ['/restaurants', '/instagram/:username'],
+    endpoints: ['/restaurants'],
     cacheTtlMs: ttlMs
   });
 });
 
 app.use('/restaurants', createRestaurantsRouter({ table, cacheTtlMs: ttlMs }));
-app.use('/instagram', instagramRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'not_found' });

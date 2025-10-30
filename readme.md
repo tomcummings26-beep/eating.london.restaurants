@@ -7,11 +7,10 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 - Idempotent upsert flow keyed by `Slug`
 - Google Places Text Search + Details + Photos hydration
 - Optional OpenAI-powered description blurb generation
-- Automatic Instagram profile discovery from restaurant websites
+- Instagram URL discovery that scans official websites for profile links
 - Rate limiting to protect Google and Airtable quotas
 - Configurable concurrency and batch limits via environment variables
 - JSON feed endpoint (`/restaurants`) for Framer or other consumers
-- Instagram post proxy (`/instagram/:username`) for lightweight embeds
 
 ## Getting Started
 
@@ -61,11 +60,10 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      | Rating | Number |
      | User Ratings | Number |
      | Opening Hours JSON | Long text |
-     | Photo URL | URL |
-     | Photo Attribution | Long text |
-     | Description | Long text |
-     | Instagram | URL |
-    | Instagram Status | Single select (`pending` / `found` / `not_found` / `error` / `retry`). Optional but recommended; without it the worker will tag **Notes** with `[instagram-skip …]` when a crawl fails so those rows stop retrying. |
+    | Photo URL | URL |
+    | Photo Attribution | Long text |
+    | Description | Long text |
+    | Instagram | URL |
      | Last Enriched | Date |
      | Enrichment Status | Single select (`pending` / `enriched` / `not_found` / `error`) |
      | Notes | Long text |
@@ -92,7 +90,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     npm run worker
     ```
 
-    The worker processes up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and* are still missing a Place ID, photo, description (only when OpenAI descriptions are enabled), or Instagram profile. Rows whose **Instagram Status** is `not_found` or `error` are skipped so the worker doesn’t loop forever on websites that block crawlers. To retry one of those rows, clear the Instagram link and set **Instagram Status** to `retry` (or blank) before running the worker again. If you choose not to add the Instagram status column, the worker adds a `[instagram-skip …]` note the first time a crawl fails; remove that tag to re-queue the venue. Records marked as `not_found` in the main enrichment status are ignored; everything else with missing data is eligible, so you no longer need to toggle a row back to `pending` just to fill in a new Instagram link. The script continues automatically until no matching records remain. If you want to stop after a single batch—for example, while testing rate limits—run the `once` script instead:
+    The worker processes up to `MAX_RECORDS_PER_RUN` entries whose **Enrichment Status** (case-insensitive) is `pending`, `error`, `enriched`, or blank *and* are still missing a Place ID, photo, or description (only when OpenAI descriptions are enabled). Records marked as `not_found` in the main enrichment status are ignored; everything else with missing data is eligible. The script continues automatically until no matching records remain. If you want to stop after a single batch—for example, while testing rate limits—run the `once` script instead:
 
     ```bash
     npm run once             # equivalent to `node index.js --once`
@@ -110,17 +108,15 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     node index.js --max=100   # process up to 100 records in this invocation
     ```
 
-  - **Instagram backfill (optional):**
+  - **Instagram discovery helper (optional):**
 
     ```bash
-    npm run instagram
+    npm run instagram          # crawl sites missing Instagram links
+    npm run instagram:force    # retry every row even if an Instagram URL already exists
+    npm run instagram:dry-run  # report discoveries without updating Airtable
     ```
 
-    Walks the entire table, fetches each restaurant website, and looks for a canonical Instagram profile link (regardless of `Enrichment Status`). Rows whose Instagram links are blank *and* whose **Instagram Status** is not `not_found`/`error` are updated by default—pass `--force` (via `npm run instagram:force`) to re-check every row even
-    if it already contains a value. The script honours `INSTAGRAM_CONCURRENCY` and `INSTAGRAM_REQUEST_INTERVAL_MS` to control
-    crawl pacing.
-
-    When the crawler can’t find a profile—or the target site blocks the request—it records `not_found` or `error` in **Instagram Status** so future runs don’t keep retrying the same website. Reset the status to `retry` to queue it back up after you’ve fixed a website URL or want to take another shot manually.
+    The script loads each restaurant with a website URL, fetches its homepage, and extracts the first Instagram profile link or `@handle` it finds. Results populate the `Instagram` column. Failures are logged and tagged in the `Notes` field with `[instagram-skip …]`; remove that marker (or run with `--force`) to retry a venue later.
 
   - **JSON feed server:**
 
@@ -146,9 +142,7 @@ The Express server mounted by `npm start` exposes the following endpoints:
 
 - `GET /` – lightweight status payload listing available routes.
 - `GET /restaurants` – returns `{ generatedAt, count, restaurants }` where `restaurants` is an array of normalised restaurant records.
-- `GET /instagram/:username` – returns the six most recent public posts for the provided Instagram handle, cached for six hours to minimise upstream calls.
-
-  The handler caches Airtable responses in-memory for `RESTAURANTS_CACHE_TTL_MS` milliseconds (default: `300000`, i.e. 5 minutes). Append `?refresh=true` to bypass the cache on-demand. Responses include permissive CORS headers so Framer or other frontend environments can fetch the JSON directly from Railway, and each restaurant entry exposes the Instagram profile URL when available. Instagram feed responses are cached separately for six hours in-process; swap the simple map for Redis or another shared store if you need cross-instance persistence.
+  The handler caches Airtable responses in-memory for `RESTAURANTS_CACHE_TTL_MS` milliseconds (default: `300000`, i.e. 5 minutes). Append `?refresh=true` to bypass the cache on-demand. Responses include permissive CORS headers so Framer or other frontend environments can fetch the JSON directly from Railway, and each restaurant entry surfaces the `instagram` URL captured during enrichment. Swap the simple map for Redis or another shared store if you need cross-instance persistence across multiple server instances.
 
 ## Staying in sync with `main`
 
