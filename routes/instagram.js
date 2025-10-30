@@ -78,13 +78,53 @@ async function tryJsonEndpoints(username) {
   return null;
 }
 
-async function fetchFromHtml(username) {
-  const url = `https://www.instagram.com/${username}/`;
-  const response = await fetch(url, { headers: htmlHeaders(username) });
-  if (!response.ok) {
-    return { error: `HTML request failed (${response.status})` };
+async function fetchHtml(username) {
+  const attempts = [
+    {
+      url: `https://www.instagram.com/${username}/`,
+      options: { headers: htmlHeaders(username) }
+    },
+    {
+      url: `https://r.jina.ai/https://www.instagram.com/${username}/`,
+      options: { headers: { 'User-Agent': USER_AGENT } }
+    },
+    {
+      url: `https://r.jina.ai/http://www.instagram.com/${username}/`,
+      options: { headers: { 'User-Agent': USER_AGENT } }
+    }
+  ];
+
+  const errors = [];
+
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, attempt.options);
+      if (!response.ok) {
+        errors.push(`HTTP ${response.status} (${attempt.url})`);
+        continue;
+      }
+      const text = await response.text();
+      if (text) {
+        return { html: text, source: attempt.url };
+      }
+    } catch (err) {
+      // try next attempt
+      errors.push(`${err?.message || err} (${attempt.url})`);
+      continue;
+    }
   }
-  const html = await response.text();
+
+  const detail = errors.length ? `: ${errors.join('; ')}` : '';
+  return { error: `All HTML fetch attempts failed${detail}` };
+}
+
+async function fetchFromHtml(username) {
+  const htmlResult = await fetchHtml(username);
+  if (htmlResult?.error) {
+    return { error: htmlResult.error };
+  }
+
+  const { html, source } = htmlResult;
 
   const additionalDataMatches = Array.from(
     html.matchAll(/window\.__additionalDataLoaded\('profilePage_\d+',({.*})\);/g)
@@ -95,7 +135,7 @@ async function fetchFromHtml(username) {
       const payload = JSON.parse(match[1]);
       const edges = normaliseEdges(payload);
       if (edges?.length) {
-        return { edges, from: 'html.additionalData' };
+        return { edges, from: `${source}#additionalData` };
       }
     } catch (err) {
       // ignore malformed JSON
@@ -109,7 +149,7 @@ async function fetchFromHtml(username) {
     try {
       const edges = JSON.parse(mediaMatch[1]);
       if (edges?.length) {
-        return { edges, from: 'html.regex' };
+        return { edges, from: `${source}#regex` };
       }
     } catch (err) {
       // ignore parse error and continue
