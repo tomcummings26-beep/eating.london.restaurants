@@ -1,12 +1,15 @@
 // controllers/rankingController.js
-import fs from "fs";
 import axios from "axios";
 import Bottleneck from "bottleneck";
 
-// ✅ Safely load restaurants.json (ESM + Railway compatible)
-const restaurants = JSON.parse(
-  fs.readFileSync(new URL("../restaurants.json", import.meta.url), "utf-8")
-);
+// 🔗 Fetch restaurants dynamically from your live API
+async function fetchRestaurants() {
+  const url = "https://eatinglondonrestaurants-production.up.railway.app/restaurants";
+  const response = await axios.get(url);
+  // response.data may have { restaurants: [...] } depending on your /restaurants endpoint
+  const data = Array.isArray(response.data) ? response.data : response.data.restaurants;
+  return data || [];
+}
 
 // 🔧 SevenRooms constants
 const SEVENROOMS_BASE_URL =
@@ -76,7 +79,8 @@ async function computeBookability(restaurant) {
     const slots = countBookableSlots(response.data);
 
     // Convert to difficulty score (higher = harder to book)
-    const totalPossibleSlots = DAYS_TO_CHECK * (LUNCH_HOURS.length + DINNER_HOURS.length);
+    const totalPossibleSlots =
+      DAYS_TO_CHECK * (LUNCH_HOURS.length + DINNER_HOURS.length);
     const availabilityRatio = slots / totalPossibleSlots;
     const bookabilityScore = Math.round((1 - availabilityRatio) * 100);
 
@@ -98,6 +102,14 @@ async function computeBookability(restaurant) {
    🧠 Compute rankings for all restaurants
 ----------------------------------------------------- */
 async function computeRankings() {
+  console.log("📡 Fetching restaurant list from live API...");
+  const restaurants = await fetchRestaurants();
+
+  if (!restaurants.length) {
+    console.warn("⚠️ No restaurants returned from API feed!");
+    return { updated: new Date().toISOString(), count: 0, rankings: [] };
+  }
+
   const results = [];
 
   for (const r of restaurants) {
@@ -106,7 +118,9 @@ async function computeRankings() {
     if (data) results.push(data);
   }
 
-  const ranked = results.sort((a, b) => b.bookability_score - a.bookability_score);
+  const ranked = results.sort(
+    (a, b) => b.bookability_score - a.bookability_score
+  );
 
   cachedRankings = ranked;
   lastUpdated = new Date().toISOString();
@@ -145,3 +159,4 @@ export async function refreshRankings(_req, res) {
     res.status(500).json({ error: "Failed to refresh rankings" });
   }
 }
+
