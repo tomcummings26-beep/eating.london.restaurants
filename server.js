@@ -4,14 +4,10 @@ import Airtable from 'airtable';
 import express from 'express';
 import cors from 'cors';
 
-// Existing routes
 import createRestaurantsRouter from './routes/restaurants.js';
-// 👇 New: Rankings route
-import rankingsRoutes from './routes/rankings.js';
+import rankingsRouter from './routes/rankings.js'; // 👈 NEW import
 
-//
-// 🌍 Environment setup
-//
+// ---------- Environment detection ----------
 const isRailway = Boolean(
   process.env.RAILWAY_STATIC_URL ||
   process.env.RAILWAY_PROJECT_ID ||
@@ -27,9 +23,7 @@ if (!isRailway) {
   console.log('[config] Railway environment detected – expecting secrets via Railway Variables.');
 }
 
-//
-// 🔧 Config variables
-//
+// ---------- Env Vars ----------
 const {
   AIRTABLE_API_KEY,
   AIRTABLE_BASE_ID,
@@ -39,29 +33,23 @@ const {
 } = process.env;
 
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
-  console.error('Missing Airtable configuration. Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID.');
+  console.error('❌ Missing Airtable configuration. Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID.');
   process.exit(1);
 }
 
 const cacheTtlMs = Number.parseInt(RESTAURANTS_CACHE_TTL_MS, 10);
 const ttlMs = Number.isFinite(cacheTtlMs) && cacheTtlMs > 0 ? cacheTtlMs : 300000;
 
-//
-// 📦 Airtable setup
-//
+// ---------- Airtable setup ----------
 const base = new Airtable({ apiKey: AIRTABLE_API_KEY }).base(AIRTABLE_BASE_ID);
 const table = base(AIRTABLE_TABLE_NAME);
 
-//
-// 🚀 Express setup
-//
+// ---------- Express setup ----------
 const app = express();
 app.disable('x-powered-by');
 app.use(cors({ origin: '*', maxAge: Math.floor(ttlMs / 1000) }));
 
-//
-// 🧭 Root endpoint
-//
+// ---------- Root route ----------
 app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
@@ -70,38 +58,27 @@ app.get('/', (_req, res) => {
   });
 });
 
-//
-// 🍽️ Restaurants feed
-//
+// ---------- Routes ----------
 app.use('/restaurants', createRestaurantsRouter({ table, cacheTtlMs: ttlMs }));
+app.use('/rankings', rankingsRouter); // ✅ Mount new rankings route
 
-//
-// 📊 Rankings route (Bookability scores)
-//
-app.use('/rankings', rankingsRoutes);
-
-//
-// ❌ 404 fallback
-//
+// ---------- 404 handler ----------
 app.use((req, res) => {
   res.status(404).json({ error: 'not_found' });
 });
 
-//
-// 🖥️ Start server
-//
+// ---------- Server startup ----------
 const httpServer = app.listen(PORT, () => {
-  console.log(`✅ Restaurant feed & rankings API running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`Available endpoints: /restaurants  |  /rankings`);
 });
 
-//
-// 🧹 Graceful shutdown
-//
+// ---------- Graceful shutdown ----------
 const shutdown = (signal) => {
-  console.log(`Received ${signal}. Shutting down restaurant feed server…`);
+  console.log(`🛑 Received ${signal}. Shutting down gracefully...`);
   httpServer.close((err) => {
     if (err) {
-      console.error('Error during server shutdown:', err);
+      console.error('Error during shutdown:', err);
       process.exit(1);
     }
     process.exit(0);
