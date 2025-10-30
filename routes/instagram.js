@@ -12,7 +12,13 @@ const USER_AGENT =
 
 const JSON_ENDPOINTS = [
   (username) => `https://www.instagram.com/${username}/?__a=1&__d=dis`,
-  (username) => `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`
+  (username) => `https://www.instagram.com/${username}/feed/?__a=1&__d=dis`,
+  (username) =>
+    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+  (username) =>
+    `https://r.jina.ai/https://www.instagram.com/${username}/?__a=1&__d=dis`,
+  (username) =>
+    `https://r.jina.ai/https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`
 ];
 
 const jsonHeaders = (username) => ({
@@ -22,7 +28,10 @@ const jsonHeaders = (username) => ({
   'Cache-Control': 'no-cache',
   Pragma: 'no-cache',
   Referer: `https://www.instagram.com/${username}/`,
-  'X-Requested-With': 'XMLHttpRequest'
+  'X-Requested-With': 'XMLHttpRequest',
+  'X-IG-App-ID': '936619743392459',
+  'X-ASBD-ID': '129477',
+  'X-IG-WWW-Claim': '0'
 });
 
 const htmlHeaders = (username) => ({
@@ -32,7 +41,11 @@ const htmlHeaders = (username) => ({
   'Accept-Language': 'en-US,en;q=0.9',
   'Cache-Control': 'no-cache',
   Pragma: 'no-cache',
-  Referer: `https://www.instagram.com/${username}/`
+  Referer: `https://www.instagram.com/${username}/`,
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'same-origin',
+  'Sec-Fetch-User': '?1'
 });
 
 const isMediaEdgeArray = (value) =>
@@ -96,16 +109,54 @@ const normaliseEdges = (payload) => {
   return findEdgesDeep(payload);
 };
 
+const extractImageUrl = (node = {}) => {
+  if (node.thumbnail_src) return node.thumbnail_src;
+  if (node.display_url) return node.display_url;
+  if (node.thumbnailUrl) return node.thumbnailUrl;
+  const candidate = node.image_versions2?.candidates?.find((c) => c?.url);
+  if (candidate?.url) return candidate.url;
+  if (node.carousel_media?.length) {
+    for (const media of node.carousel_media) {
+      const url = extractImageUrl(media);
+      if (url) return url;
+    }
+  }
+  return '';
+};
+
+const extractShortcode = (node = {}) =>
+  node.shortcode || node.code || node.pk || node.id || '';
+
+const extractCaption = (node = {}) => {
+  const direct = node.edge_media_to_caption?.edges?.[0]?.node?.text;
+  if (direct) return direct;
+  if (typeof node.caption === 'string') return node.caption;
+  if (node.caption?.text) return node.caption.text;
+  if (Array.isArray(node.caption?.edges) && node.caption.edges.length) {
+    return node.caption.edges[0]?.node?.text || '';
+  }
+  return '';
+};
+
 const mapPosts = (edges) =>
-  edges.slice(0, MAX_POSTS).map((edge) => ({
-    image: edge?.node?.thumbnail_src || edge?.node?.display_url || '',
-    link: edge?.node?.shortcode
-      ? `https://www.instagram.com/p/${edge.node.shortcode}/`
-      : '',
-    caption: edge?.node?.edge_media_to_caption?.edges?.[0]?.node?.text || '',
-    likes: edge?.node?.edge_liked_by?.count || 0,
-    comments: edge?.node?.edge_media_to_comment?.count || 0
-  }));
+  edges.slice(0, MAX_POSTS).map((edge) => {
+    const node = edge?.node || edge;
+    const shortcode = extractShortcode(node);
+    return {
+      image: extractImageUrl(node),
+      link: shortcode ? `https://www.instagram.com/p/${shortcode}/` : '',
+      caption: extractCaption(node),
+      likes:
+        node?.edge_liked_by?.count ||
+        node?.like_count ||
+        node?.edge_media_preview_like?.count ||
+        0,
+      comments:
+        node?.edge_media_to_comment?.count ||
+        node?.comment_count ||
+        0
+    };
+  });
 
 const extractEdgesFromNextData = (payload) => {
   if (!payload) return [];
@@ -113,12 +164,19 @@ const extractEdgesFromNextData = (payload) => {
   const candidateSets = [
     payload?.props?.pageProps?.graphql?.user?.edge_owner_to_timeline_media?.edges,
     payload?.props?.pageProps?.profilePosts?.edges,
-    payload?.props?.pageProps?.timeline?.edges
+    payload?.props?.pageProps?.timeline?.edges,
+    payload?.props?.pageProps?.profilePostsForTop?.edges,
+    payload?.props?.pageProps?.accountGraphql?.user?.edge_owner_to_timeline_media?.edges,
+    payload?.props?.pageProps?.profilePosts?.items
   ];
 
   for (const edges of candidateSets) {
-    if (Array.isArray(edges) && edges.length) {
+    if (isMediaEdgeArray(edges)) {
       return edges;
+    }
+    if (Array.isArray(edges) && edges.length && typeof edges[0] === 'object') {
+      // Some payloads expose media under `items` without nested nodes.
+      return edges.map((edge) => ({ node: edge.node || edge }));
     }
   }
 
@@ -128,6 +186,131 @@ const extractEdgesFromNextData = (payload) => {
   }
 
   return [];
+};
+
+const extractBalancedJson = (source, startIndex) => {
+  const start = source.indexOf('{', startIndex);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractJsonBlobs = (html, username) => {
+  const blobs = [];
+
+  const patterns = [
+    {
+      regex: /window\.__additionalDataLoaded\((?:'[^']+'|"[^"]+"),\s*/g
+    },
+    {
+      regex: /window\.__initialDataLoaded\((?:'[^']+'|"[^"]+"),\s*/g
+    },
+    {
+      regex: /window\.__initialDataLoadedQueue\s*=\s*(\[[^;]+\])/g,
+      handler: (match) => {
+        try {
+          const queue = JSON.parse(match[1]);
+          queue.forEach((item) => {
+            if (item?.payload) {
+              blobs.push(JSON.stringify(item.payload));
+            }
+          });
+        } catch (err) {
+          // ignore malformed queues
+        }
+      }
+    },
+    {
+      regex: /window\._sharedData\s*=\s*/g
+    },
+    {
+      regex: /<script[^>]+id="__NEXT_DATA__"[^>]*>/g,
+      offset: (match) => match.index + match[0].length
+    },
+    {
+      regex: new RegExp(
+        `<script type="application/json" data-sjs>`,
+        'g'
+      )
+    }
+  ];
+
+  for (const pattern of patterns) {
+    if (pattern.handler) {
+      let match;
+      while ((match = pattern.regex.exec(html))) {
+        pattern.handler(match);
+      }
+      continue;
+    }
+
+    let match;
+    while ((match = pattern.regex.exec(html))) {
+      const startIndex =
+        pattern.offset?.(match) ?? match.index + match[0].length;
+      const jsonString = extractBalancedJson(html, startIndex);
+      if (jsonString) {
+        blobs.push(jsonString);
+      }
+    }
+  }
+
+  if (!blobs.length) {
+    const sharedDataMatch = html.match(/window\._sharedData\s*=\s*(\{.*?\})\s*;/s);
+    if (sharedDataMatch?.[1]) {
+      blobs.push(sharedDataMatch[1]);
+    }
+  }
+
+  // Some HTML mirrors inline JSON under the username slug.
+  if (username) {
+    const slugPattern = new RegExp(
+      `"profile_name"\s*:\s*"${username.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}"[^}]*"edges"\s*:(\[.*?\])`,
+      's'
+    );
+    const slugMatch = html.match(slugPattern);
+    if (slugMatch?.[1]) {
+      blobs.push(`{"edges":${slugMatch[1]}}`);
+    }
+  }
+
+  return blobs;
 };
 
 async function tryJsonEndpoints(username) {
@@ -141,8 +324,17 @@ async function tryJsonEndpoints(username) {
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      const json = await response.json();
-      const edges = normaliseEdges(json);
+      const text = await response.text();
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch (err) {
+        continue;
+      }
+      let edges = normaliseEdges(json);
+      if (!edges?.length) {
+        edges = extractEdgesFromNextData(json);
+      }
       if (edges?.length) {
         return { edges, from: url };
       }
@@ -201,49 +393,35 @@ async function fetchFromHtml(username) {
   }
 
   const { html, source } = htmlResult;
+  const blobs = extractJsonBlobs(html, username);
 
-  const additionalDataMatches = Array.from(
-    html.matchAll(/window\.__additionalDataLoaded\('profilePage_\d+',({.*})\);/g)
-  );
-
-  for (const match of additionalDataMatches) {
+  for (const blob of blobs) {
     try {
-      const payload = JSON.parse(match[1]);
-      const edges = normaliseEdges(payload);
+      const payload = JSON.parse(blob);
+      let edges = normaliseEdges(payload);
+      if (!edges?.length) {
+        edges = extractEdgesFromNextData(payload);
+      }
       if (edges?.length) {
-        return { edges, from: `${source}#additionalData` };
+        return { edges, from: `${source}#html` };
       }
     } catch (err) {
-      // ignore malformed JSON
+      // Ignore malformed payloads and continue searching.
+      continue;
     }
   }
 
-  const mediaMatch = html.match(
-    /"edge_owner_to_timeline_media":\{"count":\d+,"page_info":\{.*?\},"edges":(\[.*?\])\}/s
+  const regexMatch = html.match(
+    /"edge_owner_to_timeline_media"\s*:\s*\{"count":\d+,"page_info":\{.*?\},"edges"\s*:(\[.*?\])\}/s
   );
-  if (mediaMatch) {
+  if (regexMatch) {
     try {
-      const edges = JSON.parse(mediaMatch[1]);
+      const edges = JSON.parse(regexMatch[1]);
       if (edges?.length) {
         return { edges, from: `${source}#regex` };
       }
     } catch (err) {
-      // ignore parse error and continue
-    }
-  }
-
-  const nextDataMatch = html.match(
-    /<script type="application\/json" id="__NEXT_DATA__">(.*?)<\/script>/s
-  );
-  if (nextDataMatch) {
-    try {
-      const payload = JSON.parse(nextDataMatch[1]);
-      const edges = extractEdgesFromNextData(payload);
-      if (edges?.length) {
-        return { edges, from: `${source}#__NEXT_DATA__` };
-      }
-    } catch (err) {
-      // ignore malformed NEXT_DATA payloads and continue
+      // ignore parse errors
     }
   }
 
