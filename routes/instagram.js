@@ -1,0 +1,165 @@
+import express from 'express';
+import fetch from 'node-fetch';
+
+const router = express.Router();
+
+const cache = new Map();
+const CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+const MAX_POSTS = 6;
+
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+
+const JSON_ENDPOINTS = [
+  (username) => `https://www.instagram.com/${username}/?__a=1&__d=dis`,
+  (username) => `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`
+];
+
+const jsonHeaders = (username) => ({
+  'User-Agent': USER_AGENT,
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+  Referer: `https://www.instagram.com/${username}/`,
+  'X-Requested-With': 'XMLHttpRequest'
+});
+
+const htmlHeaders = (username) => ({
+  'User-Agent': USER_AGENT,
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+  Referer: `https://www.instagram.com/${username}/`
+});
+
+const normaliseEdges = (payload) => {
+  return (
+    payload?.graphql?.user?.edge_owner_to_timeline_media?.edges ||
+    payload?.data?.user?.edge_owner_to_timeline_media?.edges ||
+    []
+  );
+};
+
+const mapPosts = (edges) =>
+  edges.slice(0, MAX_POSTS).map((edge) => ({
+    image: edge?.node?.thumbnail_src || edge?.node?.display_url || '',
+    link: edge?.node?.shortcode
+      ? `https://www.instagram.com/p/${edge.node.shortcode}/`
+      : '',
+    caption: edge?.node?.edge_media_to_caption?.edges?.[0]?.node?.text || '',
+    likes: edge?.node?.edge_liked_by?.count || 0,
+    comments: edge?.node?.edge_media_to_comment?.count || 0
+  }));
+
+async function tryJsonEndpoints(username) {
+  for (const builder of JSON_ENDPOINTS) {
+    const url = builder(username);
+    try {
+      const response = await fetch(url, { headers: jsonHeaders(username) });
+      if (response.status === 404) {
+        return { status: 404 };
+      }
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const json = await response.json();
+      const edges = normaliseEdges(json);
+      if (edges?.length) {
+        return { edges, from: url };
+      }
+    } catch (err) {
+      // fall through to next endpoint
+      continue;
+    }
+  }
+  return null;
+}
+
+async function fetchFromHtml(username) {
+  const url = `https://www.instagram.com/${username}/`;
+  const response = await fetch(url, { headers: htmlHeaders(username) });
+  if (!response.ok) {
+    return { error: `HTML request failed (${response.status})` };
+  }
+  const html = await response.text();
+
+  const additionalDataMatches = Array.from(
+    html.matchAll(/window\.__additionalDataLoaded\('profilePage_\d+',({.*})\);/g)
+  );
+
+  for (const match of additionalDataMatches) {
+    try {
+      const payload = JSON.parse(match[1]);
+      const edges = normaliseEdges(payload);
+      if (edges?.length) {
+        return { edges, from: 'html.additionalData' };
+      }
+    } catch (err) {
+      // ignore malformed JSON
+    }
+  }
+
+  const mediaMatch = html.match(
+    /"edge_owner_to_timeline_media":\{"count":\d+,"page_info":\{.*?\},"edges":(\[.*?\])\}/s
+  );
+  if (mediaMatch) {
+    try {
+      const edges = JSON.parse(mediaMatch[1]);
+      if (edges?.length) {
+        return { edges, from: 'html.regex' };
+      }
+    } catch (err) {
+      // ignore parse error and continue
+    }
+  }
+
+  return { error: 'Unable to extract media from HTML response' };
+}
+
+router.get('/:username', async (req, res) => {
+  const username = req.params.username?.trim().toLowerCase();
+
+  if (!username) {
+    return res.status(400).json({ error: 'Missing Instagram username' });
+  }
+
+  const cached = cache.get(username);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return res.json({ username, fromCache: true, posts: cached.data });
+  }
+
+  try {
+    const jsonResult = await tryJsonEndpoints(username);
+    if (jsonResult?.status === 404) {
+      return res.status(404).json({ error: 'Instagram profile not found' });
+    }
+    let edges = jsonResult?.edges;
+    let source = jsonResult?.from || 'json';
+
+    if (!edges?.length) {
+      const htmlResult = await fetchFromHtml(username);
+      if (htmlResult?.error) {
+        throw new Error(htmlResult.error);
+      }
+      edges = htmlResult.edges;
+      source = htmlResult.from;
+    }
+
+    if (!edges?.length) {
+      throw new Error('No media edges found in Instagram response');
+    }
+
+    const posts = mapPosts(edges);
+    cache.set(username, { timestamp: Date.now(), data: posts });
+
+    res.json({ username, fromCache: false, source, posts });
+  } catch (error) {
+    console.error(`\u274c Instagram fetch failed for ${username}:`, error);
+    res.status(502).json({ error: 'Failed to fetch Instagram feed' });
+  }
+});
+
+export default router;
