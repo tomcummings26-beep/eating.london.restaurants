@@ -11,6 +11,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 - Rate limiting to protect Google and Airtable quotas
 - Configurable concurrency and batch limits via environment variables
 - JSON feed endpoint (`/restaurants`) for Framer or other consumers
+- Instagram post proxy (`/instagram/:username`) for lightweight embeds
 
 ## Getting Started
 
@@ -145,10 +146,9 @@ The Express server mounted by `npm start` exposes the following endpoints:
 
 - `GET /` – lightweight status payload listing available routes.
 - `GET /restaurants` – returns `{ generatedAt, count, restaurants }` where `restaurants` is an array of normalised restaurant records.
+- `GET /instagram/:username` – returns the six most recent public posts for the provided Instagram handle, cached for six hours to minimise upstream calls.
 
-The handler caches Airtable responses in-memory for `RESTAURANTS_CACHE_TTL_MS` milliseconds (default: `300000`, i.e. 5 minutes). Append
-`?refresh=true` to bypass the cache on-demand. Responses include permissive CORS headers so Framer or other frontend environments can fetch
-the JSON directly from Railway, and each restaurant entry exposes the Instagram profile URL when available.
+  The handler caches Airtable responses in-memory for `RESTAURANTS_CACHE_TTL_MS` milliseconds (default: `300000`, i.e. 5 minutes). Append `?refresh=true` to bypass the cache on-demand. Responses include permissive CORS headers so Framer or other frontend environments can fetch the JSON directly from Railway, and each restaurant entry exposes the Instagram profile URL when available. Instagram feed responses are cached separately for six hours in-process; swap the simple map for Redis or another shared store if you need cross-instance persistence.
 
 ## Staying in sync with `main`
 
