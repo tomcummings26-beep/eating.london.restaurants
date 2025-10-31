@@ -6,7 +6,6 @@ import Bottleneck from "bottleneck";
 async function fetchRestaurants() {
   const url = "https://eatinglondonrestaurants-production.up.railway.app/restaurants";
   const response = await axios.get(url);
-  // response.data may have { restaurants: [...] } depending on your /restaurants endpoint
   const data = Array.isArray(response.data) ? response.data : response.data.restaurants;
   return data || [];
 }
@@ -16,10 +15,9 @@ const SEVENROOMS_BASE_URL =
   "https://www.sevenrooms.com/api-yoa/availability/widget/range";
 const PARTY_SIZE = 2;
 const DAYS_TO_CHECK = 14;
-const LUNCH_HOURS = [12, 13, 14, 15];
-const DINNER_HOURS = [18, 19, 20, 21];
+const DINNER_HOURS = [18, 19, 20, 21]; // focus on real dinner window
 
-// Rate limiter to avoid hammering SevenRooms
+// 🕹️ Rate limiter (avoid hammering SevenRooms)
 const limiter = new Bottleneck({
   minTime: 500,
   maxConcurrent: 2,
@@ -44,7 +42,7 @@ function buildApiUrl(slug) {
 }
 
 /* ----------------------------------------------------
-   🕓 Helper: Count available time slots (lunch/dinner)
+   🕓 Helper: Count available dinner slots
 ----------------------------------------------------- */
 function countBookableSlots(apiData) {
   if (!apiData?.data?.availability) return 0;
@@ -58,13 +56,34 @@ function countBookableSlots(apiData) {
         if (t.type !== "book") continue;
         const slotDate = new Date(t.real_datetime_of_slot.replace(" ", "T"));
         const hour = slotDate.getHours();
-        if (LUNCH_HOURS.includes(hour) || DINNER_HOURS.includes(hour)) {
+        if (DINNER_HOURS.includes(hour)) {
           availableSlots++;
         }
       }
     }
   }
+
   return availableSlots;
+}
+
+/* ----------------------------------------------------
+   ⚖️ Balanced Bookability Formula (0–100 scale)
+----------------------------------------------------- */
+function computeBookabilityScore(rating, userRatings, availableSlots) {
+  // Scarcity (fewer slots = higher difficulty)
+  const scarcity = Math.max(0, 100 - availableSlots); // up to 100 pts
+
+  // Popularity: log scale boost (caps at 15)
+  const popularityBoost = Math.min(Math.log10((userRatings || 1) + 1) * 5, 15);
+
+  // Rating: credibility signal (max 10 pts)
+  const ratingBoost = rating ? (rating / 5) * 10 : 0;
+
+  // Weighted blend (mostly scarcity)
+  const raw = scarcity * 0.8 + popularityBoost + ratingBoost;
+
+  // Clamp between 0–100
+  return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
 /* ----------------------------------------------------
@@ -78,11 +97,11 @@ async function computeBookability(restaurant) {
     const response = await limiter.schedule(() => axios.get(url));
     const slots = countBookableSlots(response.data);
 
-    // Convert to difficulty score (higher = harder to book)
-    const totalPossibleSlots =
-      DAYS_TO_CHECK * (LUNCH_HOURS.length + DINNER_HOURS.length);
-    const availabilityRatio = slots / totalPossibleSlots;
-    const bookabilityScore = Math.round((1 - availabilityRatio) * 100);
+    const bookabilityScore = computeBookabilityScore(
+      restaurant.rating,
+      restaurant.userRatings,
+      slots
+    );
 
     return {
       name: restaurant.name,
@@ -159,4 +178,6 @@ export async function refreshRankings(_req, res) {
     res.status(500).json({ error: "Failed to refresh rankings" });
   }
 }
+
+
 
