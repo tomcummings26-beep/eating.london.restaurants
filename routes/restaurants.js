@@ -88,7 +88,25 @@ const createRestaurantsRouter = ({ table, cacheTtlMs = DEFAULT_TTL }) => {
   router.get('/', async (req, res) => {
     try {
       const force = req.query.refresh === 'true';
+      const slug = req.query.slug?.toLowerCase();
+
       const { data, fetchedAt, cached } = await fetchRestaurants(force);
+
+      // 🆕 ADDED: handle ?slug filter for single restaurant
+      if (slug) {
+        const match = data.find((r) => r.slug?.toLowerCase() === slug);
+        if (!match) {
+          return res.status(404).json({
+            error: 'restaurant_not_found',
+            message: `No restaurant found for slug: ${slug}`
+          });
+        }
+        res.set('Cache-Control', `public, max-age=${Math.floor(ttl / 1000)}`);
+        res.set('X-Data-Fresh', cached ? 'cache' : 'live');
+        return res.json(match);
+      }
+
+      // Default: return full list
       res.set('Cache-Control', `public, max-age=${Math.floor(ttl / 1000)}`);
       res.set('X-Data-Fresh', cached ? 'cache' : 'live');
       res.json({
