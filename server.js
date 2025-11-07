@@ -5,7 +5,6 @@ import express from 'express';
 import cors from 'cors';
 
 import createRestaurantsRouter from './routes/restaurants.js';
-import rankingsRouter from './routes/rankings.js'; // ✅ Rankings route
 
 // ---------- Environment detection ----------
 const isRailway = Boolean(
@@ -53,14 +52,13 @@ app.use(cors({ origin: '*', maxAge: Math.floor(ttlMs / 1000) }));
 app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
-    endpoints: ['/restaurants', '/rankings'],
+    endpoints: ['/restaurants'],
     cacheTtlMs: ttlMs
   });
 });
 
 // ---------- Routes ----------
 app.use('/restaurants', createRestaurantsRouter({ table, cacheTtlMs: ttlMs }));
-app.use('/rankings', rankingsRouter); // ✅ Mount rankings route
 
 // ---------- 404 handler ----------
 app.use((req, res) => {
@@ -70,7 +68,7 @@ app.use((req, res) => {
 // ---------- Server startup ----------
 const httpServer = app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`Available endpoints: /restaurants  |  /rankings`);
+  console.log(`Available endpoints: /restaurants`);
 });
 
 // ---------- Graceful shutdown ----------
@@ -87,7 +85,6 @@ const shutdown = (signal) => {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-
 
 
 
