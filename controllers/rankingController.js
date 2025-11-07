@@ -1,5 +1,6 @@
 import axios from "axios";
 import Bottleneck from "bottleneck";
+import cron from "node-cron";
 
 /* -------------------------------------------
    Fetch restaurant list from your live API
@@ -76,16 +77,68 @@ function countDinnerSlots(apiData) {
   return count; // 0 is valid “hard to book”; null means “failed/no data”
 }
 
+/* -------------------------------------------
+   Extract nearest weekend (Fri/Sat) slots 18–21h
+-------------------------------------------- */
+function extractUpcomingWeekendSlots(apiData) {
+  if (!apiData?.data?.availability) return null;
+
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun, 5=Fri, 6=Sat
+  const nextFriday = new Date(now);
+  const nextSaturday = new Date(now);
+
+  if (day < 5) {
+    nextFriday.setDate(now.getDate() + (5 - day));
+    nextSaturday.setDate(now.getDate() + (6 - day));
+  } else if (day === 5) {
+    nextFriday.setDate(now.getDate());
+    nextSaturday.setDate(now.getDate() + 1);
+  } else if (day === 6) {
+    nextFriday.setDate(now.getDate());
+    nextSaturday.setDate(now.getDate());
+  } else {
+    nextFriday.setDate(now.getDate() + 5);
+    nextSaturday.setDate(now.getDate() + 6);
+  }
+
+  const targetDays = [nextFriday.toISOString().split("T")[0], nextSaturday.toISOString().split("T")[0]];
+  const targetHours = [18, 19, 20, 21];
+  const found = {};
+
+  for (const [date, details] of Object.entries(apiData.data.availability)) {
+    if (!targetDays.includes(date)) continue;
+    const availableTimes = [];
+    for (const detail of details) {
+      if (detail.is_closed) continue;
+      for (const t of detail.times) {
+        if (t.type !== "book") continue;
+        const d = new Date((t.real_datetime_of_slot || "").replace(" ", "T"));
+        if (targetHours.includes(d.getHours())) {
+          availableTimes.push(d.toISOString().slice(11, 16)); // "18:30"
+        }
+      }
+    }
+    if (availableTimes.length) found[date] = availableTimes;
+  }
+
+  return Object.keys(found).length ? found : null;
+}
+
+/* -------------------------------------------
+   Fetch + parse slots for each restaurant
+-------------------------------------------- */
 async function fetchDinnerSlotsForRestaurant(restaurant) {
-  if (!restaurant?.slug) return { ok: false, slots: null, restaurant };
+  if (!restaurant?.slug) return { ok: false, slots: null, weekendSlots: null, restaurant };
   try {
     const url = buildApiUrl(restaurant.slug);
     const response = await limiter.schedule(() => safeGet(url));
     const slots = countDinnerSlots(response.data);
-    return { ok: slots !== null, slots, restaurant };
+    const weekendSlots = extractUpcomingWeekendSlots(response.data);
+    return { ok: slots !== null, slots, weekendSlots, restaurant };
   } catch (e) {
     console.error(`❌ ${restaurant.slug} failed:`, e.message || e);
-    return { ok: false, slots: null, restaurant };
+    return { ok: false, slots: null, weekendSlots: null, restaurant };
   }
 }
 
@@ -108,7 +161,6 @@ function normalizeToScore(results) {
   const valid = results.filter(r => r.ok && typeof r.slots === "number");
   if (!valid.length) return results.map(r => ({ ...r, bookability_score: null }));
 
-  // Cap at P95 to reduce skew from venues exposing massive slot counts
   const rawSlots = valid.map(v => v.slots);
   const minSlots = Math.min(...rawSlots);
   const p95Slots = percentile(rawSlots, 95);
@@ -119,8 +171,8 @@ function normalizeToScore(results) {
       return { ...r, bookability_score: null };
     }
     const capped = Math.min(r.slots, p95Slots);
-    const ratio = (capped - minSlots) / denom;       // 0 at hardest → 1 at (capped) easiest
-    const score = Math.round((1 - ratio) * 100);     // invert → 100 hard … 0 easy
+    const ratio = (capped - minSlots) / denom;
+    const score = Math.round((1 - ratio) * 100);
     return { ...r, bookability_score: score };
   });
 }
@@ -156,14 +208,15 @@ export async function computeRankings() {
   // Normalize across cohort
   const withScores = normalizeToScore(results);
 
-  // Build output rows (only include those with a score)
+  // Build output rows
   const rows = withScores
     .filter(r => r.bookability_score !== null)
-    .map(({ restaurant, slots, bookability_score }) => ({
+    .map(({ restaurant, slots, bookability_score, weekendSlots }) => ({
       name: restaurant.name,
       slug: restaurant.slug,
       bookability_score,
       available_slots: slots,
+      weekend_slots: weekendSlots,
       rating: restaurant.rating ?? null,
       userRatings: restaurant.userRatings ?? null
     }))
@@ -217,6 +270,24 @@ export async function refreshRankings(_req, res) {
     res.status(500).json({ error: "Failed to refresh rankings" });
   }
 }
+
+/* -------------------------------------------
+   Nightly cron (runs daily at 02:00 UTC)
+-------------------------------------------- */
+cron.schedule("0 2 * * *", async () => {
+  if (isComputing) {
+    console.log("⏳ Cron skipped — computation already in progress.");
+    return;
+  }
+  console.log("🌙 Nightly cron triggered — refreshing rankings...");
+  try {
+    await computeRankings();
+    console.log("✅ Nightly rankings refresh complete.");
+  } catch (err) {
+    console.error("❌ Nightly cron failed:", err);
+  }
+});
+
 
 
 
