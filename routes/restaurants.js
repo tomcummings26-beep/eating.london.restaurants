@@ -2,9 +2,12 @@ import express from 'express';
 
 const DEFAULT_TTL = 300000;
 
+/* ------------------------- Helpers ------------------------- */
+
 const numericOrNull = (value) => {
   if (value === undefined || value === null) return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
   const parsed = Number.parseFloat(String(value));
   return Number.isFinite(parsed) ? parsed : null;
 };
@@ -12,6 +15,7 @@ const numericOrNull = (value) => {
 const parseOpeningHours = (value) => {
   if (!value) return [];
   if (Array.isArray(value)) return value;
+
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
@@ -20,11 +24,13 @@ const parseOpeningHours = (value) => {
       return [];
     }
   }
+
   return [];
 };
 
 const toRestaurant = (record) => {
   const fields = record.fields || {};
+
   return {
     id: record.id,
     name: fields['Name'] || '',
@@ -53,6 +59,8 @@ const toRestaurant = (record) => {
     notes: fields['Notes'] || ''
   };
 };
+
+/* ------------------------- Router Factory ------------------------- */
 
 const createRestaurantsRouter = ({ table, cacheTtlMs = DEFAULT_TTL }) => {
   if (!table) {
@@ -85,6 +93,7 @@ const createRestaurantsRouter = ({ table, cacheTtlMs = DEFAULT_TTL }) => {
 
   const router = express.Router();
 
+  /* ------------------------- GET /restaurants (full list OR ?slug=) ------------------------- */
   router.get('/', async (req, res) => {
     try {
       const force = req.query.refresh === 'true';
@@ -92,33 +101,74 @@ const createRestaurantsRouter = ({ table, cacheTtlMs = DEFAULT_TTL }) => {
 
       const { data, fetchedAt, cached } = await fetchRestaurants(force);
 
-      // 🆕 ADDED: handle ?slug filter for single restaurant
+      // If query param ?slug=... is passed → return single item
       if (slug) {
         const match = data.find((r) => r.slug?.toLowerCase() === slug);
+
         if (!match) {
           return res.status(404).json({
             error: 'restaurant_not_found',
             message: `No restaurant found for slug: ${slug}`
           });
         }
+
         res.set('Cache-Control', `public, max-age=${Math.floor(ttl / 1000)}`);
         res.set('X-Data-Fresh', cached ? 'cache' : 'live');
+
         return res.json(match);
       }
 
-      // Default: return full list
+      // Otherwise return full list
       res.set('Cache-Control', `public, max-age=${Math.floor(ttl / 1000)}`);
       res.set('X-Data-Fresh', cached ? 'cache' : 'live');
-      res.json({
+
+      return res.json({
         generatedAt: new Date(fetchedAt).toISOString(),
         count: data.length,
         restaurants: data
       });
+
     } catch (error) {
       console.error('Failed to load restaurants from Airtable:', error);
-      res.status(500).json({
+      return res.status(500).json({
         error: 'failed_to_load_restaurants',
         message: 'Unable to load restaurants from Airtable.'
+      });
+    }
+  });
+
+  /* ------------------------- 🆕 GET /restaurants/:slug ------------------------- */
+  router.get('/:slug', async (req, res) => {
+    try {
+      const slugParam = req.params.slug?.toLowerCase();
+
+      if (!slugParam) {
+        return res.status(400).json({
+          error: 'invalid_slug',
+          message: 'Slug is required'
+        });
+      }
+
+      const { data, fetchedAt, cached } = await fetchRestaurants(false);
+      const match = data.find((r) => r.slug?.toLowerCase() === slugParam);
+
+      if (!match) {
+        return res.status(404).json({
+          error: 'restaurant_not_found',
+          message: `No restaurant found for slug: ${slugParam}`
+        });
+      }
+
+      res.set('Cache-Control', `public, max-age=${Math.floor(ttl / 1000)}`);
+      res.set('X-Data-Fresh', cached ? 'cache' : 'live');
+
+      return res.json(match);
+
+    } catch (error) {
+      console.error('Failed to load restaurant by slug:', error);
+      return res.status(500).json({
+        error: 'failed_to_load_restaurant',
+        message: 'Unable to load restaurant by slug.'
       });
     }
   });
@@ -127,3 +177,4 @@ const createRestaurantsRouter = ({ table, cacheTtlMs = DEFAULT_TTL }) => {
 };
 
 export default createRestaurantsRouter;
+
