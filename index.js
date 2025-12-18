@@ -481,6 +481,11 @@ async function enrichRecord(record) {
     }
 
     const { postcode, city } = extractAddressBits(details.address_components);
+    const enrichedStatusValue = pickEnrichmentStatus('enriched');
+    const isAlreadyEnriched =
+      enrichedStatusValue &&
+      typeof fields['Enrichment Status'] === 'string' &&
+      fields['Enrichment Status'].trim().toLowerCase() === enrichedStatusValue.trim().toLowerCase();
     const firstPhoto = details.photos?.[0];
     const photoUrl = firstPhoto ? buildPhotoUrl(firstPhoto.photo_reference) : '';
     const photoAttr = firstPhoto ? buildPhotoAttribution(firstPhoto) : '';
