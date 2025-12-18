@@ -7,7 +7,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
 - Idempotent upsert flow keyed by `Slug`
 - Google Places Text Search + Details + Photos hydration
 - Optional OpenAI-powered description blurb generation
-- Instagram URL discovery that scans official websites for profile links
+- Photo refresh mode for keeping Google Places imagery up-to-date
 - Rate limiting to protect Google and Airtable quotas
 - Configurable concurrency and batch limits via environment variables
 - JSON feed endpoint (`/restaurants`) for Framer or other consumers
@@ -41,32 +41,31 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
    - Create a base (default name `eating.london`) and a table (default `Restaurants`).
    - Add the following fields (type suggestions in parentheses):
 
-     | Field | Type |
-     | --- | --- |
-     | Name | Single line text |
-     | Slug | Single line text (unique) |
-     | API Source | Single select (`SevenRooms` / `Tock` / `OpenTable` / `Resy`) |
-     | API ID | Text |
-     | Place ID | Text |
-     | Address | Long text |
-     | City | Text |
-     | Postcode | Text |
-     | Lat | Number (8 decimal places) |
-     | Lng | Number (8 decimal places) |
-     | Website | URL |
-     | Phone | Text |
-     | Cuisine | Text |
-     | Price Level | Number (0–4) |
-     | Rating | Number |
-     | User Ratings | Number |
-     | Opening Hours JSON | Long text |
+    | Field | Type |
+    | --- | --- |
+    | Name | Single line text |
+    | Slug | Single line text (unique) |
+    | API Source | Single select (`SevenRooms` / `Tock` / `OpenTable` / `Resy`) |
+    | API ID | Text |
+    | Place ID | Text |
+    | Address | Long text |
+    | City | Text |
+    | Postcode | Text |
+    | Lat | Number (8 decimal places) |
+    | Lng | Number (8 decimal places) |
+    | Website | URL |
+    | Phone | Text |
+    | Cuisine | Text |
+    | Price Level | Number (0–4) |
+    | Rating | Number |
+    | User Ratings | Number |
+    | Opening Hours JSON | Long text |
     | Photo URL | URL |
     | Photo Attribution | Long text |
     | Description | Long text |
-    | Instagram | URL |
-     | Last Enriched | Date |
-     | Enrichment Status | Single select (`pending` / `enriched` / `not_found` / `error`) |
-     | Notes | Long text |
+    | Last Enriched | Date |
+    | Enrichment Status | Single select (`pending` / `enriched` / `not_found` / `error`) |
+    | Notes | Long text |
 
    - Seed the table with at least `Name`, `Slug`, and optionally `API Source` / `API ID`. The included [`airtable_restaurants_seed.csv`](./airtable_restaurants_seed.csv) provides a header with all fields and a sample row to import into Airtable.
 
@@ -108,15 +107,8 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
     node index.js --max=100   # process up to 100 records in this invocation
     ```
 
-  - **Instagram discovery helper (optional):**
 
-    ```bash
-    npm run instagram          # crawl sites missing Instagram links
-    npm run instagram:force    # retry every row even if an Instagram URL already exists
-    npm run instagram:dry-run  # report discoveries without updating Airtable
-    ```
-
-    The script loads each restaurant with a website URL, fetches its homepage, and extracts the first Instagram profile link or `@handle` it finds. Results populate the `Instagram` column. Failures are logged and tagged in the `Notes` field with `[instagram-skip …]`; remove that marker (or run with `--force`) to retry a venue later.
+    To force a refresh of Google Places photos even when the `Photo URL` is already populated, set `REFRESH_PHOTOS=true` in your environment or pass `--refresh-photos` on the command line. This is useful after redeployments if you want Airtable to pick up newly available images.
 
   - **JSON feed server:**
 
