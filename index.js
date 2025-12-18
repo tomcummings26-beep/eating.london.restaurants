@@ -4,14 +4,6 @@ import axios from 'axios';
 import Bottleneck from 'bottleneck';
 import slugify from 'slugify';
 
-import {
-  findInstagramProfile,
-  addInstagramSkipNote,
-  removeInstagramSkipNote,
-  hasInstagramSkipNote,
-  INSTAGRAM_SKIP_SENTINEL
-} from './lib/instagram.js';
-
 // In production (Railway) configuration must come from environment variables.
 // For local development we still allow a .env file.
 const isRailway = Boolean(
@@ -41,7 +33,8 @@ const {
   CONCURRENCY = '2',
   SLEEP_MS_BETWEEN_REQUESTS = '250',
   OPENAI_API_KEY,
-  AIRTABLE_ENRICHMENT_STATUS_OPTIONS
+  AIRTABLE_ENRICHMENT_STATUS_OPTIONS,
+  REFRESH_PHOTOS
 } = process.env;
 
 const OPENAI_ENABLED = Boolean(OPENAI_API_KEY);
@@ -51,6 +44,8 @@ const maxOverrideArg = cliArgs.find((arg) => arg.startsWith('--max='));
 const runOnceFlag = cliArgs.includes('--once');
 const runAllFlag = cliArgs.includes('--all');
 const runContinuously = runAllFlag || !runOnceFlag;
+const refreshPhotosFlag = cliArgs.includes('--refresh-photos');
+const refreshPhotos = refreshPhotosFlag || parseBoolean(REFRESH_PHOTOS);
 
 const parseMaxRecords = () => {
   const defaultMax = Number(MAX_RECORDS_PER_RUN);
@@ -108,6 +103,13 @@ const parseSelectOptions = (value, fallback = []) => {
     .map((option) => option.trim())
     .filter(Boolean);
   return entries.length ? entries : [...fallback];
+};
+
+const parseBoolean = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'y'].includes(normalized);
 };
 
 const enrichmentStatusOptions = parseSelectOptions(
@@ -226,20 +228,6 @@ const toSlug = (name) =>
 
 const clean = (s) => (s == null ? '' : String(s).trim());
 
-const ensureNewlineSeparated = (value) => {
-  if (!value) return '';
-  return String(value)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join('\n');
-};
-
-const normalizeNotes = (value) => {
-  if (!value) return '';
-  return ensureNewlineSeparated(value);
-};
-
 const isMissingNotesFieldError = (error) =>
   notesFieldAvailable &&
   error?.statusCode === 422 &&
@@ -283,10 +271,11 @@ const performTableAction = async (action, records) => {
   }
 };
 
-const upsertBySlug = async (slug, fields, recordId) => {
+const upsertBySlug = async (slug, fields, recordId, options = {}) => {
+  const { omitSlug = false } = options;
   const sanitizedSlug = clean(slug);
   let payload = { ...fields };
-  if (sanitizedSlug) {
+  if (!omitSlug && sanitizedSlug) {
     payload['Slug'] = sanitizedSlug;
   }
 
@@ -476,6 +465,11 @@ async function enrichRecord(record) {
     }
 
     const { postcode, city } = extractAddressBits(details.address_components);
+    const enrichedStatusValue = pickEnrichmentStatus('enriched');
+    const isAlreadyEnriched =
+      enrichedStatusValue &&
+      typeof fields['Enrichment Status'] === 'string' &&
+      fields['Enrichment Status'].trim().toLowerCase() === enrichedStatusValue.trim().toLowerCase();
     const firstPhoto = details.photos?.[0];
     const photoUrl = firstPhoto ? buildPhotoUrl(firstPhoto.photo_reference) : '';
     const photoAttr = firstPhoto ? buildPhotoAttribution(firstPhoto) : '';
@@ -519,52 +513,20 @@ async function enrichRecord(record) {
       });
     }
 
-    const storedWebsite = clean(fields['Website']);
-    const googleWebsite = clean(details.website);
-    const websiteForInstagram = googleWebsite || storedWebsite || '';
-    const existingInstagram = clean(fields['Instagram']);
-    let instagramUrl = existingInstagram;
-    let notesForUpdate = normalizeNotes(fields['Notes']);
-    let notesChanged = false;
-
-    const setNotes = (next) => {
-      if (next !== notesForUpdate) {
-        notesForUpdate = next;
-        notesChanged = true;
-      }
-    };
-
-    if (existingInstagram && hasInstagramSkipNote(notesForUpdate)) {
-      setNotes(removeInstagramSkipNote(notesForUpdate));
-    }
-
-    if (
-      !instagramUrl &&
-      hasInstagramSkipNote(notesForUpdate) &&
-      googleWebsite &&
-      googleWebsite !== storedWebsite
-    ) {
-      setNotes(removeInstagramSkipNote(notesForUpdate));
-    }
-
-    if (!instagramUrl && websiteForInstagram && !hasInstagramSkipNote(notesForUpdate)) {
-      const igResult = await findInstagramProfile(websiteForInstagram, { limiter });
-      if (igResult?.url) {
-        instagramUrl = igResult.url;
-        setNotes(removeInstagramSkipNote(notesForUpdate));
-        console.log(`  ↳ Instagram: ${instagramUrl}`);
-      } else if (igResult?.error) {
-        if (igResult.message) {
-          console.log(`  ↳ Instagram lookup skipped: ${igResult.message}`);
-        }
-        if (notesFieldAvailable) {
-          const reason = igResult.message || 'Instagram profile not found.';
-          setNotes(addInstagramSkipNote(notesForUpdate, reason));
-        }
-      }
-    }
-
     // Step 3: Upsert
+    if (isAlreadyEnriched) {
+      await upsertBySlug(
+        slug,
+        {
+          'Photo URL': photoUrl || fields['Photo URL'] || ''
+        },
+        record.id,
+        { omitSlug: true }
+      );
+      console.log(`Updated photo only: ${name} (${slug})`);
+      return;
+    }
+
     const payload = {
       'Name': details.name || name,
       'Slug': slug,
@@ -587,16 +549,7 @@ async function enrichRecord(record) {
       'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
     };
 
-    if (instagramUrl && instagramUrl !== existingInstagram) {
-      payload['Instagram'] = instagramUrl;
-    }
-
-    if (notesChanged && notesFieldAvailable) {
-      payload['Notes'] = ensureNewlineSeparated(notesForUpdate);
-    }
-
-    const enrichedStatus = pickEnrichmentStatus('enriched');
-    if (enrichedStatus) payload['Enrichment Status'] = enrichedStatus;
+    if (enrichedStatusValue) payload['Enrichment Status'] = enrichedStatusValue;
 
     await upsertBySlug(slug, payload, record.id);
     console.log(`Enriched: ${name} (${slug})`);
@@ -632,17 +585,10 @@ async function fetchPendingBatch(limit) {
     ? `OR({Description} = BLANK(), {Description} = '')`
     : null;
 
-  const recheckPredicates = [
-    '{Place ID} = BLANK()',
-    '{Photo URL} = BLANK()'
-  ];
+  const recheckPredicates = ['{Place ID} = BLANK()', '{Photo URL} = BLANK()'];
 
-  if (notesFieldAvailable) {
-    recheckPredicates.push(
-      `AND({Instagram} = BLANK(), FIND('${INSTAGRAM_SKIP_SENTINEL}', {Notes} & '') = 0)`
-    );
-  } else {
-    recheckPredicates.push('{Instagram} = BLANK()');
+  if (refreshPhotos) {
+    recheckPredicates.push('TRUE()');
   }
 
   if (descriptionNeedsWork) {
@@ -692,6 +638,10 @@ async function run() {
   const maxPerBatch = parseMaxRecords();
   let totalProcessed = 0;
   let iteration = 0;
+
+  if (refreshPhotos) {
+    console.log('[photos] Refresh mode enabled – reprocessing records even if photos are present.');
+  }
 
   while (true) {
     const toProcess = await fetchPendingBatch(maxPerBatch);
