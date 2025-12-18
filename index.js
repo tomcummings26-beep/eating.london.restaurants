@@ -427,6 +427,12 @@ async function enrichRecord(record) {
   let slug = clean(fields['Slug']);
   if (!slug) slug = toSlug(name);
 
+  const enrichedStatusValue = pickEnrichmentStatus('enriched');
+  const isAlreadyEnriched =
+    enrichedStatusValue &&
+    typeof fields['Enrichment Status'] === 'string' &&
+    fields['Enrichment Status'].trim().toLowerCase() === enrichedStatusValue.trim().toLowerCase();
+
   if (!name) {
     console.log(`Skipping record ${record.id} (missing Name)`);
     return;
@@ -438,6 +444,11 @@ async function enrichRecord(record) {
     if (!placeId) {
       placeId = await findPlaceIdByText(name);
       if (!placeId) {
+        if (isAlreadyEnriched) {
+          console.log(`Skipping photo refresh for ${name} (no Place ID found)`);
+          return;
+        }
+
         const status = pickEnrichmentStatus('not_found');
         const update = {
           'Last Enriched': resolveLastEnrichedValue(fields['Last Enriched'])
@@ -452,6 +463,11 @@ async function enrichRecord(record) {
     // Step 2: Details
     const details = await getPlaceDetails(placeId);
     if (!details) {
+      if (isAlreadyEnriched) {
+        console.log(`Skipping photo refresh for ${name} (no details returned)`);
+        return;
+      }
+
       const status = pickEnrichmentStatus('error', 'pending');
       const update = {
         'Place ID': placeId,
@@ -557,6 +573,12 @@ async function enrichRecord(record) {
     if (isAirtableNotFound(err)) {
       throw err;
     }
+
+    if (isAlreadyEnriched) {
+      console.error(`Error refreshing photo for ${name}:`, err?.response?.data || err.message);
+      return;
+    }
+
     console.error(`Error enriching ${name}:`, err?.response?.data || err.message);
     const status = pickEnrichmentStatus('error', 'pending');
     const fallbackFields = {
