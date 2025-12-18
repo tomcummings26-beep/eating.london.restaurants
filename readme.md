@@ -123,7 +123,7 @@ A minimal Node.js worker that enriches Airtable restaurant records with Google P
      - Or use the CLI: `railway variables set AIRTABLE_API_KEY=...` (repeat for each variable).
      - Verify they are available with `railway variables` or `railway run node -e "console.log(process.env.AIRTABLE_API_KEY)"`.
    - Railway automatically exposes these variables to the Node.js process—no `.env` file is needed in production. The worker detects when it is running on Railway and logs that it is using Railway Variables via `process.env`.
-   - Deploy (Railway will run `npm install` followed by `npm start`; by default this now launches the JSON feed server on the injected `PORT` and binds to `0.0.0.0`. Set `START_MODE=worker` in Railway Variables or change the start command to `npm run worker` if you want the enrichment worker to be the primary process in that service).
+   - Deploy. Railway will run `npm install` followed by the `Procfile` entry `web: node start.js`, which makes `node` the PID 1 process and avoids `npm` printing `SIGTERM` noise during platform shutdowns. The default command launches the JSON feed server on the injected `PORT` and binds to `0.0.0.0`. Set `START_MODE=worker` in Railway Variables or change the start command to `npm run worker` if you want the enrichment worker to be the primary process in that service.
    - Configure a schedule (e.g., hourly) under **Cron / Schedules** with the command `npm run worker` (or `npm run worker:once`) so enrichment jobs execute separately from the feed server.
    - For manual backfills, trigger `npm run backfill` from the Railway run tab to walk through every pending record in batches of
      `MAX_RECORDS_PER_RUN`.
