@@ -11,10 +11,7 @@
     "worker:backfill": "node index.js --all",
     "dev": "NODE_ENV=development node index.js",
     "once": "npm run worker:once",
-    "backfill": "npm run worker:backfill",
-    "instagram": "node scripts/enrich_instagram.js",
-    "instagram:force": "node scripts/enrich_instagram.js --force",
-    "instagram:dry-run": "node scripts/enrich_instagram.js --dry-run"
+    "backfill": "npm run worker:backfill"
   },
   "dependencies": {
     "airtable": "^0.12.1",
