@@ -28,7 +28,8 @@ const {
   AIRTABLE_BASE_ID,
   AIRTABLE_TABLE_NAME = 'Restaurants',
   RESTAURANTS_CACHE_TTL_MS = '300000',
-  PORT = process.env.PORT || 3000
+  PORT = process.env.PORT || 3000,
+  HOST = process.env.HOST || '0.0.0.0'
 } = process.env;
 
 if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
@@ -66,8 +67,8 @@ app.use((req, res) => {
 });
 
 // ---------- Server startup ----------
-const httpServer = app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+const httpServer = app.listen(PORT, HOST, () => {
+  console.log(`✅ Server running on http://${HOST}:${PORT}`);
   console.log(`Available endpoints: /restaurants`);
 });
 
@@ -85,6 +86,16 @@ const shutdown = (signal) => {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection – shutting down:', reason);
+  shutdown('unhandledRejection');
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception – shutting down:', err);
+  shutdown('uncaughtException');
+});
 
 
 
